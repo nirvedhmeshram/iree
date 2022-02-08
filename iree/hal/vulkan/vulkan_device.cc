@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include "third_party/vulkan_headers/include/vulkan/vulkan_beta.h"
 
 #include "iree/base/internal/arena.h"
 #include "iree/base/internal/math.h"
@@ -72,6 +73,9 @@ IREE_API_EXPORT iree_status_t iree_hal_vulkan_query_extensibility_set(
 
   // VK_KHR_storage_buffer_storage_class:
   // Our generated SPIR-V kernels use storage buffers for all their data access.
+  if (IREE_PLATFORM_APPLE)
+    ADD_EXT(IREE_HAL_VULKAN_EXTENSIBILITY_DEVICE_EXTENSIONS_REQUIRED,
+            VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
   ADD_EXT(IREE_HAL_VULKAN_EXTENSIBILITY_DEVICE_EXTENSIONS_REQUIRED,
           VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME);
 

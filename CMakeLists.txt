@@ -80,7 +80,9 @@ set(IREE_HAL_DRIVER_CUDA_DEFAULT OFF)
 # Vulkan is not natively supported on Apple platforms.
 # Metal should generally be used instead, though MoltenVK may also work.
 if (APPLE)
-  set(IREE_HAL_DRIVER_VULKAN_DEFAULT OFF)
+  find_package(vulkan REQUIRED)
+  message(STATUS "vulkan found")
+  set(IREE_HAL_DRIVER_VULKAN_DEFAULT ${IREE_HAL_DRIVER_DEFAULTS})
 else()
   set(IREE_HAL_DRIVER_VULKAN_DEFAULT ${IREE_HAL_DRIVER_DEFAULTS})
 endif()
