@@ -30,8 +30,8 @@ LogicalResult setAdrenoCodeGenConfig(const spirv::TargetEnv &targetEnv,
   int64_t subgroupSize = targetEnv.getResourceLimits().subgroup_size().getInt();
   return TypeSwitch<Operation *, LogicalResult>(rootOp)
       .Case<linalg::BatchMatmulOp, linalg::MatmulOp>([](auto op) {
-        std::array<int64_t, 2> workgroupXY = {32, 2};
-        std::array<int64_t, 3> threadMNK = {16, 4, 4};
+        std::array<int64_t, 2> workgroupXY = {128, 1};
+        std::array<int64_t, 3> threadMNK = {4, 4, 4};
         return setMatmulOpConfig(op, workgroupXY, threadMNK);
       })
       .Case<linalg::Conv2DNhwcHwcfOp>([subgroupSize](auto op) {
@@ -40,7 +40,7 @@ LogicalResult setAdrenoCodeGenConfig(const spirv::TargetEnv &targetEnv,
       })
       .Case<linalg::DepthwiseConv2DNhwcHwcOp>([subgroupSize](auto op) {
         return setConvOpConfig(op, subgroupSize,
-                               /*bestTilingFactor=*/16);
+                               /*bestTilingFactor=*/32);
       })
       .Default([](Operation *) { return success(); });
 }
