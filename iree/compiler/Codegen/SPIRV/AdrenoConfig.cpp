@@ -30,7 +30,7 @@ LogicalResult setAdrenoCodeGenConfig(const spirv::TargetEnv &targetEnv,
   int64_t subgroupSize = targetEnv.getResourceLimits().subgroup_size().getInt();
   return TypeSwitch<Operation *, LogicalResult>(rootOp)
       .Case<linalg::BatchMatmulOp, linalg::MatmulOp>([](auto op) {
-        std::array<int64_t, 2> workgroupXY = {128, 1};
+        std::array<int64_t, 2> workgroupXY = {256, 1};
         std::array<int64_t, 3> threadMNK = {4, 4, 4};
         return setMatmulOpConfig(op, workgroupXY, threadMNK);
       })
