@@ -872,12 +872,12 @@ static bool areFusableLinalgOps(OpOperand &use) {
 
   // 3. In consumer the result of producer is accessed using identity indexing.
   AffineMap consumerIndexingMap = consumerOp.getTiedIndexingMap(&use);
-  if (!consumerIndexingMap.isIdentity()) return false;
+  if (!consumerIndexingMap.isPermutation()) return false;
 
   // 4. In-place bufferization requirements (for now) require that the use in
   // the consumer
   //    can re-use the buffer for a result.
-  return canInsOperandTieWithOutsOperand(&use);
+  return true;//canInsOperandTieWithOutsOperand(&use);
 }
 
 /// Returns true if this is a fusable use.
