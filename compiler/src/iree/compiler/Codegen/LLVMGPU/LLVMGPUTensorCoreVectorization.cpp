@@ -75,7 +75,7 @@ static Optional<SmallVector<int64_t, 4>> getGPUTCNativeVectorSize(
   int64_t m = 16;
   int64_t n = 8;
   if (auto contract = dyn_cast<vector::ContractionOp>(op)) {
-    int64_t k = contract.getLhsType().getElementType().isF16() ? 8 : 4;
+    int64_t k = contract.getLhsType().getElementType().isF16() ? 16 : 8;
     SmallVector<int64_t, 4> nativeSize(contract.getIteratorTypes().size() - 3,
                                        1);
     nativeSize.append({m, n, k});
