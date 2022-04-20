@@ -14,6 +14,7 @@
 
 #include "iree/base/internal/file_io.h"
 #include "iree/base/internal/file_path.h"
+#include "iree/base/internal/math.h"
 #include "iree/base/tracing.h"
 #include "iree/modules/hal/module.h"
 #include "iree/vm/bytecode_module.h"
@@ -505,6 +506,10 @@ static iree_status_t iree_trace_replay_parse_hal_buffer_contents(
 // to |dst|.
 static void iree_trace_replay_write_element(
     iree_hal_element_type_t element_type, int value, void* dst) {
+  if(IREE_HAL_ELEMENT_TYPE_FLOAT_16) {
+    *(uint16_t*)dst = iree_math_f32_to_f16((float)value);
+    return;
+  }
 #define IREE_TRACE_REPLAY_WRITE_ELEMENT_CASE(ETYPE, CTYPE) \
   case IREE_HAL_ELEMENT_TYPE_##ETYPE:                      \
     *(CTYPE*)dst = (CTYPE)value;                           \

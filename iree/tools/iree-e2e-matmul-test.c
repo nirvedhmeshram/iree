@@ -13,6 +13,7 @@
 #include "iree/base/api.h"
 #include "iree/base/internal/file_path.h"
 #include "iree/base/internal/flags.h"
+#include "iree/base/internal/math.h"
 #include "iree/base/target_platform.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/init.h"
@@ -122,6 +123,21 @@ static void reference_matmul_element_f32(
   result_data[n + m * n_size] = acc;
 }
 
+// Helper for reference_matmul_element. f16 case.
+static void reference_matmul_element_f16(
+    iree_hal_dim_t m_size, iree_hal_dim_t k_size, iree_hal_dim_t n_size,
+    iree_hal_element_type_t lhs_type, iree_hal_element_type_t rhs_type,
+    uint16_t* lhs_data, uint16_t* rhs_data, uint16_t* acc_data, uint16_t* result_data,
+    iree_hal_dim_t m, iree_hal_dim_t n) {
+  float acc = iree_math_f16_to_f32(acc_data[n + m * n_size]);
+  for (iree_hal_dim_t k = 0; k < k_size; ++k) {
+    float lhs_value = iree_math_f16_to_f32(lhs_data[k + m * k_size]);
+    float rhs_value = iree_math_f16_to_f32(rhs_data[n + k * n_size]);
+    acc += lhs_value * rhs_value;
+  }
+  result_data[n + m * n_size] = iree_math_f32_to_f16(acc);
+}
+
 // Helper for reference_matmul_element. i8*i8->i32 case.
 static void reference_matmul_element_i8_i8_i32(
     iree_hal_dim_t m_size, iree_hal_dim_t k_size, iree_hal_dim_t n_size,
@@ -150,13 +166,20 @@ static void reference_matmul_element(
     reference_matmul_element_f32(m_size, k_size, n_size, lhs_type, rhs_type,
                                  (float*)lhs_data, (float*)rhs_data,
                                  (float*)acc_data, (float*)result_data, m, n);
-  } else if (iree_hal_element_type_is_integer(lhs_type, 8) &&
+  }  else if (lhs_type == IREE_HAL_ELEMENT_TYPE_FLOAT_16 &&
+      rhs_type == IREE_HAL_ELEMENT_TYPE_FLOAT_16 &&
+      acc_type == IREE_HAL_ELEMENT_TYPE_FLOAT_16){
+      reference_matmul_element_f16(m_size, k_size, n_size, lhs_type, rhs_type,
+                                 (uint16_t*)lhs_data, (uint16_t*)rhs_data,
+                                 (uint16_t*)acc_data, (uint16_t*)result_data, m, n);  
+  }  else if (iree_hal_element_type_is_integer(lhs_type, 8) &&
              iree_hal_element_type_is_integer(rhs_type, 8) &&
              iree_hal_element_type_is_integer(acc_type, 32)) {
     reference_matmul_element_i8_i8_i32(
         m_size, k_size, n_size, lhs_type, rhs_type, (int8_t*)lhs_data,
         (int8_t*)rhs_data, (int32_t*)acc_data, (int32_t*)result_data, m, n);
-  } else {
+  } 
+  else {
     iree_status_abort(
         iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                          "unhandled combination of element types in matmul"));
@@ -216,6 +239,9 @@ static iree_vm_value_t read_matrix_element(iree_hal_dim_t m_size,
   } else if (result_type == IREE_HAL_ELEMENT_TYPE_FLOAT_32) {
     return iree_vm_value_make_f32(((float*)data)[index]);
   }
+  else if (result_type == IREE_HAL_ELEMENT_TYPE_FLOAT_16) {
+    return iree_vm_value_make_f16(((uint16_t*)data)[index]);
+  }
   iree_status_abort(iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                                      "unhandled matmul result type"));
   return iree_vm_value_make_none();
@@ -239,6 +265,9 @@ static int snprintf_value(char* buf, size_t bufsize, iree_vm_value_t value,
       return snprintf(buf, bufsize, "%" PRIi32, value.i32);
     case IREE_VM_VALUE_TYPE_I64:
       return snprintf(buf, bufsize, "%" PRIi64, value.i64);
+    case IREE_VM_VALUE_TYPE_F16:
+      return snprintf(buf, bufsize,
+                      precision == PRECISION_HIGH ? "%.8g" : "%.4g", iree_math_f16_to_f32(value.f16));
     case IREE_VM_VALUE_TYPE_F32:
       return snprintf(buf, bufsize,
                       precision == PRECISION_HIGH ? "%.8g" : "%.4g", value.f32);
@@ -282,6 +311,8 @@ static bool matmul_result_elements_agree(iree_vm_value_t expected,
       // tests should succeed or fail in the same way if we rescale all input
       // data by a constant factor (as long as we don't run out of exponents).
       return fabsf(actual.f32 - expected.f32) < 1e-3f;
+    case IREE_VM_VALUE_TYPE_F16:
+      return fabsf(iree_math_f16_to_f32(actual.f16) - iree_math_f16_to_f32(expected.f16)) < 1e-3f;
     default:
       iree_status_abort(iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                                          "unhandled value type"));

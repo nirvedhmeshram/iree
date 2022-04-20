@@ -141,13 +141,13 @@ py_binary(
 
 # Testing Ampere+ tensorcore path.
 [iree_generated_trace_runner_test(
-    name = "e2e_matmul_direct_f32_gpu_large_%s" % compilation_info,
+    name = "e2e_matmul_direct_%s_gpu_large_%s" %(lhs_rhs_type, compilation_info),
     compiler_flags = [
         "--iree-cuda-llvm-target-arch=sm_80",
     ],
     generator = ":generate_e2e_matmul_tests",
     generator_args = [
-        "--lhs_rhs_type=f32",
+        "--lhs_rhs_type=%s" %lhs_rhs_type,
         "--shapes=gpu_large",
         "--compilation_info=%s" % compilation_info,
     ],
@@ -163,7 +163,10 @@ py_binary(
         ("cuda", "cuda"),
     ],
     trace_runner = "//iree/tools:iree-e2e-matmul-test",
-) for compilation_info in [
+) for lhs_rhs_type in [
+    "f32",
+    "f16",
+] for compilation_info in [
     "LLVMGPUMatmulTensorCore",
 ]]
 
