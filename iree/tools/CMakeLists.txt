@@ -284,6 +284,7 @@ if(IREE_BUILD_COMPILER)
       MLIRLinalgToLLVM
       MLIRLinalgToSPIRV
       MLIRLinalgTransforms
+      MLIRNVGPU
       MLIRQuant
       MLIRQuantTransforms
       MLIRSCF

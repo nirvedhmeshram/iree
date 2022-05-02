@@ -68,6 +68,7 @@ iree_compiler_cc_library(
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MemRefToLLVM",
         "@llvm-project//mlir:MemRefTransforms",
+        "@llvm-project//mlir:MLIRNVGPUToNVVM",
         "@llvm-project//mlir:NVVMDialect",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:ROCDLDialect",

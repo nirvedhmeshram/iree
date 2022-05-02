@@ -10,7 +10,9 @@
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Conversion/VectorToGPU/NvGpuSupport.h"
 #include "mlir/Dialect/GPU/GPUDialect.h"
+#include "mlir/Dialect/NVGPU/NVGPUDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
@@ -217,7 +219,7 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
 struct LLVMGPUVectorToGPUPass
     : public LLVMGPUVectorToGPUBase<LLVMGPUVectorToGPUPass> {
   void getDependentDialects(DialectRegistry& registry) const override {
-    registry.insert<gpu::GPUDialect, AffineDialect, memref::MemRefDialect>();
+    registry.insert<gpu::GPUDialect, AffineDialect, memref::MemRefDialect,nvgpu::NVGPUDialect>();
   }
 
   void runOnOperation() override {
@@ -229,9 +231,11 @@ struct LLVMGPUVectorToGPUPass
       return signalPassFailure();
     }
     RewritePatternSet patterns(funcOp.getContext());
-    populatePrepareVectorToMMAPatterns(patterns);
+    populatePrepareVectorToMMAPatterns(patterns, true);
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
-
+    if(failed(convertVectorToNVVMCompatibleMMASync(funcOp))){
+      return signalPassFailure();
+    };
     convertVectorToMMAOps(funcOp);
     createAsyncGroups(funcOp);
   }
