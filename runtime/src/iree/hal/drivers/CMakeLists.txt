@@ -26,7 +26,7 @@ if(IREE_HAL_DRIVER_VULKAN)
   list(APPEND IREE_HAL_DRIVER_MODULES iree::hal::vulkan::registration)
 endif()
 if(IREE_HAL_DRIVER_EXPERIMENTAL_ROCM)
-  list(APPEND IREE_HAL_DRIVER_MODULES experimental::rocm::registration)
+  list(APPEND IREE_HAL_DRIVER_MODULES iree::experimental::rocm::registration)
 endif()
 
 iree_cc_library(

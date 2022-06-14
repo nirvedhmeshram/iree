@@ -21,7 +21,7 @@ iree_cc_library(
     iree::base::core_headers
     iree::base::tracing
     iree::hal
-    experimental::rocm
+    iree::experimental::rocm
   INCLUDES
   "${CMAKE_CURRENT_LIST_DIR}/../../.."
   DEFINES
