@@ -25,6 +25,7 @@ using namespace mlir::iree_compiler;
 
 static constexpr unsigned cudaWarpSize = 32;
 static constexpr StringLiteral kCudaTarget = "cuda";
+static constexpr StringLiteral kRocmTarget = "rocm";
 namespace mlir {
 namespace iree_compiler {
 llvm::cl::opt<std::string> clGPUCodegenTransformDialectFileName(
@@ -46,6 +47,8 @@ struct TileWorkgroupSizePair {
 constexpr unsigned softwarePipelineDepthTensorCore = 4;
 // Simt codegen does not do software pipelining.
 constexpr unsigned softwarePipelineDepthSimt = 0;
+// MFMA codegen does not do software pipelining for now.
+constexpr unsigned softwarePipelineDepthMFMA = 0;
 }  // namespace
 
 /// Return the best combination of tile size and wg size. It will then used to
@@ -77,6 +80,20 @@ static void getTensorCoreConfig(
   }
 }
 
+/// Return the best combination of tile size and wg size when using tensorcore
+/// operations.
+static void getMFMAConfig(
+    SmallVectorImpl<TileWorkgroupSizePair> &tileSizes, bool isFp16) {
+  // Tile sizes are skewed towards small matmul for now. Long term the plan is
+  // to not rely on hardcoded configurations.
+  if (isFp16) {
+    tileSizes.push_back(TileWorkgroupSizePair({{32, 32, 32}, {64, 2, 1}}));
+  } else {
+    tileSizes.push_back(TileWorkgroupSizePair({{32, 32, 16}, {64, 2, 1}}));
+  }
+}
+
+
 static std::string getTargetArch(func::FuncOp entryPoint) {
   if (auto variantOp =
           entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
@@ -96,6 +113,17 @@ bool isCudaTarget(func::FuncOp entryPoint) {
     IREE::HAL::ExecutableTargetAttr targetAttr = variantOp.getTarget();
     if (auto backend = targetAttr.getBackend()) {
       return backend.getValue().str() == kCudaTarget;
+    }
+  }
+  return false;
+}
+
+bool isRocmTarget(func::FuncOp entryPoint) {
+  if (auto variantOp =
+          entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
+    IREE::HAL::ExecutableTargetAttr targetAttr = variantOp.getTarget();
+    if (auto backend = targetAttr.getBackend()) {
+      return backend.getValue().str() == kRocmTarget;
     }
   }
   return false;
@@ -126,6 +154,29 @@ static bool supportsTensorCore(func::FuncOp entryPoint, linalg::LinalgOp op) {
   }
   // Check that we support converting any fused operation. When using the
   // tensorcore pipeline we need to be sure we can generate MMA ops otherwise
+  // the code will be highly inneficent.
+  bool fusedOpSupported = true;
+  entryPoint.walk([&fusedOpSupported](linalg::GenericOp linalgOp) {
+    for (Operation &fusedOp : linalgOp.getOps()) {
+      if (!isa<arith::AddFOp, arith::MulFOp, arith::MaxFOp, arith::MinFOp,
+               linalg::YieldOp, arith::DivFOp>(fusedOp)) {
+        fusedOpSupported = false;
+        break;
+      }
+    }
+  });
+  if (!fusedOpSupported) return false;
+  return true;
+}
+
+static bool supportsMFMA(func::FuncOp entryPoint, linalg::LinalgOp op) {
+  // Limit tensor core pipeline to matmul as not all combinations of transpose
+  // are supported upstream.
+  // TODO(thomasraoux): Enable batchMatmul and generic contraction.
+  if (getTargetArch(entryPoint) != "gfx908" || !isa<linalg::MatmulOp>(op))
+      return false;
+  // Check that we support converting any fused operation. When using the
+  // MFMA pipeline we need to be sure we can generate MFMA ops otherwise
   // the code will be highly inneficent.
   bool fusedOpSupported = true;
   entryPoint.walk([&fusedOpSupported](linalg::GenericOp linalgOp) {
@@ -211,6 +262,29 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
                       sizeK != ShapedType::kDynamicSize;
   if (isStaticSize) {
     /// Try tensorcore config first.
+    if(supportsMFMA(entryPoint, op)){
+      SmallVector<TileWorkgroupSizePair> TCtileSizeConfig;
+
+      getTensorCoreConfig(TCtileSizeConfig, op.getInputOperand(0)
+                                                ->get()
+                                                .getType()
+                                                .cast<RankedTensorType>()
+                                                .getElementType()
+                                                .isF16());
+      // Pick the best configuration where the original shape is aligned on the
+      // tile size.
+      for (TileWorkgroupSizePair &config : TCtileSizeConfig) {
+        if (sizeK % config.tileSize[2] == 0 &&
+            sizeN % config.tileSize[1] == 0 &&
+            sizeM % config.tileSize[0] == 0) {
+          return setMatmulConfig(
+              config.tileSize[0], config.tileSize[1], config.tileSize[2],
+              config.workgroupSize,softwarePipelineDepthMFMA,
+              IREE::Codegen::DispatchLoweringPassPipeline::
+                  LLVMGPUMatmulMFMA);
+        }
+      }     
+    }
     if (supportsTensorCore(entryPoint, op)) {
       SmallVector<TileWorkgroupSizePair> TCtileSizeConfig;
 

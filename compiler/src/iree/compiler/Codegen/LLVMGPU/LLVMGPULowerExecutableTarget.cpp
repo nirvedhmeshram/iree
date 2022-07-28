@@ -167,6 +167,9 @@ void LLVMGPULowerExecutableTargetPass::runOnOperation() {
       case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt:
         addGPUMatmulSimtPassPipeline(executableLoweringPipeline);
         break;
+      case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulMFMA:
+        addGPUMatmulMFMAPassPipeline(executableLoweringPipeline);
+        break;
       case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulTensorCore:
         addGPUMatmulTensorCorePassPipeline(
             executableLoweringPipeline,

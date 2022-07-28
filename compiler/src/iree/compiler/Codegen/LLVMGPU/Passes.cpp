@@ -21,6 +21,7 @@
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
+#include <iostream>
 
 namespace mlir {
 namespace iree_compiler {
@@ -104,6 +105,41 @@ void addGPUVectorizationPassPipeline(OpPassManager &pm) {
 }
 
 void addGPUMatmulSimtPassPipeline(OpPassManager &pm) {
+  std::cout<<"In the simt pipeline\n";
+  tileAndBufferize(pm);
+
+  auto &nestedModulePM = pm.nest<ModuleOp>();
+  // Distribute linalg onto threads within the workgroup.
+  nestedModulePM.addNestedPass<func::FuncOp>(createLLVMGPUTileAndDistribute());
+  nestedModulePM.addNestedPass<func::FuncOp>(createMemrefCopyToLinalgPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createGPUDistributeSharedMemoryCopy());
+  nestedModulePM.addPass(createCanonicalizerPass());
+  nestedModulePM.addPass(createCSEPass());
+
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createLLVMGPUReduceSharedMemoryBankConflicts());
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createRemoveSingleIterationLoopPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createWorkGroupSwizzle(logSwizzleTile));
+  nestedModulePM.addPass(createCanonicalizerPass());
+  nestedModulePM.addPass(createCSEPass());
+
+  // Linalg -> vector
+  nestedModulePM.addNestedPass<func::FuncOp>(createLLVMGPUVectorizationPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(createCSEPass());
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createOptimizeVectorTransferPass());
+
+  // Pipeline memory operations.
+  nestedModulePM.addNestedPass<func::FuncOp>(createGPUPipeliningPass());
+}
+
+
+void addGPUMatmulMFMAPassPipeline(OpPassManager &pm) {
+  std::cout<<"In the mfma pipeline\n";
   tileAndBufferize(pm);
 
   auto &nestedModulePM = pm.nest<ModuleOp>();
