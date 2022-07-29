@@ -86,11 +86,7 @@ static void getMFMAConfig(
     SmallVectorImpl<TileWorkgroupSizePair> &tileSizes, bool isFp16) {
   // Tile sizes are skewed towards small matmul for now. Long term the plan is
   // to not rely on hardcoded configurations.
-  if (isFp16) {
-    tileSizes.push_back(TileWorkgroupSizePair({{32, 32, 32}, {64, 2, 1}}));
-  } else {
-    tileSizes.push_back(TileWorkgroupSizePair({{32, 32, 16}, {64, 2, 1}}));
-  }
+    tileSizes.push_back(TileWorkgroupSizePair({{64, 64, 16}, {64, 2, 1}}));
 }
 
 
@@ -265,7 +261,7 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
     if(supportsMFMA(entryPoint, op)){
       SmallVector<TileWorkgroupSizePair> TCtileSizeConfig;
 
-      getTensorCoreConfig(TCtileSizeConfig, op.getInputOperand(0)
+      getMFMAConfig(TCtileSizeConfig, op.getInputOperand(0)
                                                 ->get()
                                                 .getType()
                                                 .cast<RankedTensorType>()

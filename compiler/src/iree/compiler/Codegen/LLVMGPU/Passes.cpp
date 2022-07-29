@@ -36,6 +36,13 @@ llvm::cl::opt<bool> llvmgpuUseMMASync(
     "iree-codegen-llvmgpu-use-mma-sync",
     llvm::cl::desc("use mma sync instead of wmma ops"), llvm::cl::init(false));
 
+
+/// Flag used to pick which passes of the tensorcore pipeline to use for mfma
+/// pipeline
+llvm::cl::opt<bool> llvmgpuUseMFMA(
+    "iree-codegen-llvmgpu-use-mfma",
+    llvm::cl::desc("target to mfma ops instead of mma"), llvm::cl::init(false));
+
 static FailureOr<Value> gpuAllocationFn(OpBuilder &builder, Location loc,
                                         MemRefType memRefType,
                                         ValueRange dynamicSizes,
