@@ -20,6 +20,7 @@ iree_compiler_cc_library(
         "ConvertToROCDL.cpp",
         "KernelConfig.cpp",
         "LLVMGPULowerExecutableTarget.cpp",
+        "LLVMGPUMFMAVectorization.cpp",
         "LLVMGPUMultiBuffering.cpp",
         "LLVMGPUReduceBankConflicts.cpp",
         "LLVMGPUTensorCoreVectorization.cpp",

@@ -357,6 +357,10 @@ std::unique_ptr<OperationPass<func::FuncOp>> createLLVMGPUVectorizationPass(
 std::unique_ptr<OperationPass<func::FuncOp>>
 createLLVMGPUTensorCoreVectorizationPass();
 
+/// Convert Linalg ops to Vector and prepare converstion to GPU MFMA ops.
+std::unique_ptr<OperationPass<func::FuncOp>>
+createLLVMGPUMFMAVectorizationPass();
+
 /// Lower vector ops before convertion to LLVM.
 std::unique_ptr<OperationPass<func::FuncOp>> createLLVMGPUVectorLoweringPass();
 

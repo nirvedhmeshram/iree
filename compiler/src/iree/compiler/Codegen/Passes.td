@@ -329,6 +329,12 @@ def LLVMGPUTensorCoreVectorization :
   let constructor = "mlir::iree_compiler::createLLVMGPUTensorCoreVectorizationPass()";
 }
 
+def LLVMGPUMFMAVectorization :
+    Pass<"iree-llvmgpu-mfma-vectorization", "func::FuncOp"> {
+  let summary = "Pass to convert linalg into Vector and transform it to a form that can be lowered to GPU MMA ops";
+  let constructor = "mlir::iree_compiler::createLLVMGPUMFMAVectorizationPass()";
+}
+
 def LLVMGPUVectorLowering :
     Pass<"iree-llvmgpu-vector-lowering", "func::FuncOp"> {
   let summary = "Pass to lower Vector ops before conversion to LLVM.";
