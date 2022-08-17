@@ -4,10 +4,10 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-//===- SPIRVTileAndVectorizeToCooperativeOps.cpp --------------------------===//
+//===- SPIRVTileAndVectorizeToJointOps.cpp --------------------------===//
 //
 // This pass tiles Linalg ops with buffer semantics to subgroups and vectorizes
-// them into vector ops suitable for lowering to SPIR-V cooperative ops.
+// them into vector ops suitable for lowering to SPIR-V joint ops.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,7 +39,7 @@ using mlir::iree_compiler::IREE::LinalgExt::LinalgVectorizationPattern;
 using mlir::iree_compiler::IREE::LinalgExt::TilingPatterns;
 using mlir::iree_compiler::IREE::LinalgExt::VectorizationPatterns;
 
-#define DEBUG_TYPE "iree-spirv-tile-and-vectorize-to-cooperative-ops"
+#define DEBUG_TYPE "iree-spirv-tile-and-vectorize-to-joint-ops"
 
 namespace mlir {
 namespace iree_compiler {
@@ -49,9 +49,9 @@ namespace {
 // Subgroup tiling patterns
 //===----------------------------------------------------------------------===//
 
-/// Gets the chosen hardware cooperative op size attached to the given `op`
+/// Gets the chosen hardware joint op size attached to the given `op`
 /// as CodeGen lowering configuration.
-static SmallVector<int64_t> getTargetCooperativeOpSize(linalg::LinalgOp op) {
+static SmallVector<int64_t> getTargetJointOpSize(linalg::LinalgOp op) {
   return getTileSizes(op, 1);  // For subgroup level tiling
 }
 
@@ -158,11 +158,11 @@ void populateVectorizationPatterns(MLIRContext *context,
   vector::populateVectorReductionToContractPatterns(patterns);
 }
 
-/// Returns vector shape matching native cooperative op sizes for unrolling
+/// Returns vector shape matching native joint op sizes for unrolling
 /// high-D vectors.
-Optional<SmallVector<int64_t, 4>> getCooperativeOpVectorShape(
+Optional<SmallVector<int64_t, 4>> getJointOpVectorShape(
     Operation *op, ArrayRef<int64_t> nativeShape) {
-  // Unroll vector.contract ops according to native cooperative matrix size.
+  // Unroll vector.contract ops according to native joint matrix size.
   if (auto contractOp = dyn_cast<vector::ContractionOp>(op)) {
     return llvm::to_vector<4>(nativeShape);
   }
@@ -170,11 +170,11 @@ Optional<SmallVector<int64_t, 4>> getCooperativeOpVectorShape(
   // Unrolling vector.contract generates vector.{insert|extract}_strided_slice
   // ops for the vector transfer ops associated with the original contract op.
   // We can use those to figure out how to unroll transfer ops accordingly
-  // to match the native cooperative op sizes.
+  // to match the native joint op sizes.
   //
   // A better way might be to inspect the SSA value chain to figure out how the
-  // transfer ops are used (e.g., for cooperative matrix A/B/C matrix) and use
-  // the corresponding cooperative matrix configuration.
+  // transfer ops are used (e.g., for joint matrix A/B/C matrix) and use
+  // the corresponding joint matrix configuration.
 
   if (auto writeOp = dyn_cast<vector::TransferWriteOp>(op)) {
     auto insert =
@@ -195,7 +195,7 @@ Optional<SmallVector<int64_t, 4>> getCooperativeOpVectorShape(
     return llvm::to_vector<4>(sliceType.getShape());
   }
 
-  if (auto extOp = dyn_cast<arith::ExtFOp>(op)) {
+    if (auto extOp = dyn_cast<arith::ExtFOp>(op)) {
     VectorType sliceType;
     for (Operation *users : op->getUsers()) {
       auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
@@ -211,10 +211,10 @@ Optional<SmallVector<int64_t, 4>> getCooperativeOpVectorShape(
 }
 
 /// Adds patterns to unroll vector ops to SPIR-V native vector size.
-void populateVectorUnrollPatterns(ArrayRef<int64_t> cooperativeOpSize,
+void populateVectorUnrollPatterns(ArrayRef<int64_t> jointOpSize,
                                   RewritePatternSet &patterns) {
-  auto getShapeFn = [cooperativeOpSize](Operation *op) {
-    return getCooperativeOpVectorShape(op, cooperativeOpSize);
+  auto getShapeFn = [jointOpSize](Operation *op) {
+    return getJointOpVectorShape(op, jointOpSize);
   };
   auto options = vector::UnrollVectorOptions().setNativeShapeFn(getShapeFn);
   vector::populateVectorUnrollPatterns(patterns, options);
@@ -278,9 +278,9 @@ class CombineContractTranspose final
 // Main pass
 //===----------------------------------------------------------------------===//
 
-class SPIRVTileAndVectorizeToCooperativeOpsPass final
-    : public SPIRVTileAndVectorizeToCooperativeOpsBase<
-          SPIRVTileAndVectorizeToCooperativeOpsPass> {
+class SPIRVTileAndVectorizeToJointOpsPass final
+    : public SPIRVTileAndVectorizeToJointOpsBase<
+          SPIRVTileAndVectorizeToJointOpsPass> {
  public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<gpu::GPUDialect, linalg::LinalgDialect,
@@ -310,8 +310,8 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
       return signalPassFailure();
     }
 
-    auto cooperativeOpSize = getTargetCooperativeOpSize(rootOp);
-    auto subgroupCounts = deduceSubgroupCounts(rootOp);
+    SmallVector<int64_t> jointOpSize = getTargetJointOpSize(rootOp);
+    SmallVector<int64_t> subgroupCounts = deduceSubgroupCounts(rootOp);
 
     // Then tile and distribute to subgroups.
 
@@ -331,14 +331,14 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
         return signalPassFailure();
       }
     }
-    
+
     LLVM_DEBUG({
       llvm::dbgs() << "--- After tiling to subgroups ---\n";
       funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
       llvm::dbgs() << "\n\n";
     });
 
-    // Now vectorize and unroll to native cooperative sizes.
+    // Now vectorize and unroll to native joint sizes.
 
     {
       RewritePatternSet vectorizationPatterns(context);
@@ -347,7 +347,7 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
               funcOp, std::move(vectorizationPatterns)))) {
         return signalPassFailure();
       }
-     
+
       RewritePatternSet canonicalizationPatterns(context);
       vector::ContractionOp::getCanonicalizationPatterns(
           canonicalizationPatterns, context);
@@ -365,7 +365,7 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
 
     {
       RewritePatternSet vectorUnrollPatterns(context);
-      populateVectorUnrollPatterns(cooperativeOpSize, vectorUnrollPatterns);
+      populateVectorUnrollPatterns(jointOpSize, vectorUnrollPatterns);
       if (failed(applyPatternsAndFoldGreedily(
               funcOp, std::move(vectorUnrollPatterns)))) {
         return signalPassFailure();
@@ -377,10 +377,10 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
       funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
       llvm::dbgs() << "\n\n";
     });
-   
+
     // At the last perform various canonicalization and cleanups.
 
-    linalg::hoistRedundantVectorTransfers(funcOp);
+    //linalg::hoistRedundantVectorTransfers(funcOp);
 
     LLVM_DEBUG({
       llvm::dbgs() << "--- After hoisting vector transfers ---\n";
@@ -404,9 +404,9 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
       llvm::dbgs() << "\n\n";
     });
 
-    // When using cooperative matrix we don't want to lower the contract,
+    // When using joint matrix we don't want to lower the contract,
     // instead we want to merge contract and transpose so that they can be
-    // converted to cooperative matrix matmul op.
+    // converted to joint matrix matmul op.
     RewritePatternSet combineTransposePatterns(context);
     combineTransposePatterns.add<CombineContractTranspose>(context);
     if (failed(applyPatternsAndFoldGreedily(
@@ -425,8 +425,8 @@ class SPIRVTileAndVectorizeToCooperativeOpsPass final
 }  // namespace
 
 std::unique_ptr<OperationPass<func::FuncOp>>
-createSPIRVTileAndVectorizeToCooperativeOpsPass() {
-  return std::make_unique<SPIRVTileAndVectorizeToCooperativeOpsPass>();
+createSPIRVTileAndVectorizeToJointOpsPass() {
+  return std::make_unique<SPIRVTileAndVectorizeToJointOpsPass>();
 }
 
 }  // namespace iree_compiler

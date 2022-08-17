@@ -21,6 +21,7 @@ iree_cc_library(
     "AdrenoConfig.cpp"
     "AppleConfig.cpp"
     "ConvertToSPIRVPass.cpp"
+    "INTELConfig.cpp"
     "KernelConfig.cpp"
     "MaliConfig.cpp"
     "NVIDIAConfig.cpp"
@@ -33,7 +34,9 @@ iree_cc_library(
     "SPIRVTileAndDistribute.cpp"
     "SPIRVTileAndPromote.cpp"
     "SPIRVTileAndVectorizeToCooperativeOps.cpp"
+    "SPIRVTileAndVectorizeToJointOps.cpp"
     "SPIRVVectorToCooperativeOps.cpp"
+    "SPIRVVectorToJointOps.cpp"
     "SPIRVVectorize.cpp"
     "SPIRVVectorizeLoadStore.cpp"
     "Utils.cpp"
@@ -90,6 +93,7 @@ iree_cc_library(
     MLIRVectorToSPIRV
     MLIRVectorTransforms
     iree::compiler::Codegen::Common
+    iree::compiler::Codegen::LLVMGPU
     iree::compiler::Codegen::Dialect::IREECodegenDialect
     iree::compiler::Codegen::PassHeaders
     iree::compiler::Codegen::Transforms
