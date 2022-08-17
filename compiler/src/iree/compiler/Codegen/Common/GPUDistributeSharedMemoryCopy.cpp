@@ -367,7 +367,7 @@ class GPUDistributeSharedMemoryCopyPass
 
     int64_t flatWorkgroupSize =
         workgroupSize[0] * workgroupSize[1] * workgroupSize[2];
-    bool isAligned = llvm::all_of(
+    /*bool isAligned = llvm::all_of(
         copiesToWorkgroupMem, [flatWorkgroupSize](linalg::GenericOp copyOp) {
           MemRefType dstMemRefType =
               copyOp.getOutputOperand(0)->get().getType().cast<MemRefType>();
@@ -377,9 +377,9 @@ class GPUDistributeSharedMemoryCopyPass
           return canPerformVectorAccessUsingAllThreads(shape, flatWorkgroupSize,
                                                        targetVectorSize);
         });
-    debugPrint(funcOp, "After initial IR cleanup");
+    debugPrint(funcOp, "After initial IR cleanup");*/
 
-    if (isAligned) {
+    if (0) {
       // Ignore all the exisiting loop
       llvm::SmallDenseSet<scf::ForOp> loopsToIgnore;
       funcOp.walk([&](scf::ForOp loop) { loopsToIgnore.insert(loop); });

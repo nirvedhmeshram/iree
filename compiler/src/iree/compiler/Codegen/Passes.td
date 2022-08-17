@@ -99,6 +99,13 @@ def OptimizeVectorTransfer :
   ];
 }
 
+def SPIRVMatchJointLoad :
+    Pass<"iree-codegen-spirv-match-joint-load", "func::FuncOp"> {
+  let summary =
+      "Run cleanup on joint matrix loads";
+  let constructor = "mlir::iree_compiler::createSPIRVMatchJointLoadPass()";
+}
+
 
 def TestPartitionableLoopsInterface :
     Pass<"iree-codegen-test-partitionable-loops-interface", ""> {
@@ -441,6 +448,15 @@ def SPIRVTileAndVectorizeToCooperativeOps : Pass<
     "mlir::iree_compiler::createSPIRVTileAndVectorizeToCooperativeOpsPass()";
 }
 
+def SPIRVTileAndVectorizeToJointOps : Pass<
+    "iree-spirv-tile-and-vectorize-to-joint-ops", "func::FuncOp"> {
+  let summary = "Tile Linalg ops with buffer semantics to subgroups and "
+                "vectorize to vector ops suitable for lowering to SPIR-V "
+                "cooperative ops";
+  let constructor =
+    "mlir::iree_compiler::createSPIRVTileAndVectorizeToJointOpsPass()";
+}
+
 def SPIRVTileAndPromote : Pass<"iree-spirv-tile-and-promote", "func::FuncOp"> {
   let summary = "Promote tiled Linalg ops with buffer semantics to use "
                 "workgroup memory and then tile to invocations";
@@ -464,6 +480,13 @@ def SPIRVVectorToCooperativeOps :
   let summary = "Convert vector ops to SPIR-V cooperative ops";
   let constructor =
       "mlir::iree_compiler::createSPIRVVectorToCooperativeOpsPass()";
+}
+
+def SPIRVVectorToJointOps :
+    Pass<"iree-spirv-vector-to-joint-ops", "func::FuncOp"> {
+  let summary = "Convert vector ops to SPIR-V cooperative ops";
+  let constructor =
+      "mlir::iree_compiler::createSPIRVVectorToJointOpsPass()";
 }
 
 def SPIRVVectorizeLoadStore :

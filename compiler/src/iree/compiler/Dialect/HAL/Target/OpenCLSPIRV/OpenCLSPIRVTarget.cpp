@@ -90,12 +90,16 @@ static spirv::TargetEnvAttr getSPIRVTargetEnv(
        spirv::Capability::Image1D,
        spirv::Capability::SampledBuffer,
        spirv::Capability::ImageBuffer,
-       spirv::Capability::ImageReadWrite},
+       spirv::Capability::ImageReadWrite,
+       spirv::Capability::JointMatrixINTEL,
+       spirv::Capability::CooperativeMatrixNV},
       {spirv::Extension::SPV_INTEL_subgroups,
        spirv::Extension::SPV_EXT_shader_atomic_float_add,
        spirv::Extension::SPV_EXT_shader_atomic_float16_add,
        spirv::Extension::SPV_EXT_shader_atomic_float_min_max,
-       spirv::Extension::SPV_KHR_linkonce_odr},
+       spirv::Extension::SPV_KHR_linkonce_odr,
+       spirv::Extension::SPV_INTEL_joint_matrix,
+       spirv::Extension::SPV_NV_cooperative_matrix},
       context);
   return spirv::TargetEnvAttr::get(triple, spirv::Vendor::Unknown,
                                    spirv::DeviceType::Unknown,
@@ -162,11 +166,11 @@ class OpenCLSPIRVTargetBackend : public TargetBackend {
       return variantOp.emitError() << "failed to serialize spv.module";
     }
 
-    // if (!options.dumpBinariesPath.empty()) {
-    //   dumpDataToPath<uint32_t>(options.dumpBinariesPath,
-    //   options.dumpBaseName,
-    //                            variantOp.getName(), ".spv", spvBinary);
-    // }
+     if (!options.dumpBinariesPath.empty()) {
+       dumpDataToPath<uint32_t>(options.dumpBinariesPath,
+       options.dumpBaseName,
+                                variantOp.getName(), ".spv", spvBinary);
+     }
 
     auto spvCodeRef = flatbuffers_uint32_vec_create(builder, spvBinary.data(),
                                                     spvBinary.size());

@@ -164,6 +164,7 @@ iree_cc_library(
     "UserConfig.cpp"
     "VectorReductionToGPU.cpp"
     "WorkGroupSwizzle.cpp"
+    "SPIRVMatchJointLoadPass.cpp"
   DEPS
     ::CommonPasses
     ::TransformDialectInterpreterPass

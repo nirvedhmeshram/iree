@@ -47,6 +47,9 @@ def SPIRV_SubgroupReduce
     : I32EnumAttrCase<"SPIRVSubgroupReduce", 19>;
 
 def VMVX_Default : I32EnumAttrCase<"VMVXDefault", 20>;
+def SPIRV_VectorizeToJointOps
+    : I32EnumAttrCase<"SPIRVVectorizeToJointOps", 0xfe>;
+
 def None : I32EnumAttrCase<"None", 0xff>;
 
 // EnumAttrCase for all known lowerings for ops within dispatch region
@@ -64,7 +67,7 @@ def DispatchLoweringPassPipelineEnum
                     SPIRV_Distribute, SPIRV_Vectorize,
                     SPIRV_VectorizeToCooperativeOps,
                     SPIRV_VectorizeWithWorkgroupMemory, SPIRV_SubgroupReduce,
-                    VMVX_Default, None
+                    VMVX_Default, SPIRV_VectorizeToJointOps, None
                   ]> {
   let cppNamespace = "::mlir::iree_compiler::IREE::Codegen";
   // Don't generate a C++ class! We want to use the AttrDef
