@@ -19,6 +19,7 @@ iree_compiler_cc_library(
         "AdrenoConfig.cpp",
         "AppleConfig.cpp",
         "ConvertToSPIRVPass.cpp",
+        "INTELConfig.cpp",
         "KernelConfig.cpp",
         "MaliConfig.cpp",
         "NVIDIAConfig.cpp",
