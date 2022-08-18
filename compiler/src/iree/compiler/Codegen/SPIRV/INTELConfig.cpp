@@ -35,7 +35,7 @@ struct JointMatrixSize {
 static Optional<JointMatrixSize> getJointMatrixSize(
     spirv::ResourceLimitsAttr resourceLimits, Type lhsType, Type rhsType,
     Type resultType, int64_t m, int64_t n, int64_t k) {
-    std::cout<<"resourceLimits.getCooperativeMatrixPropertiesNv() is:\n";
+    /*std::cout<<"resourceLimits.getCooperativeMatrixPropertiesNv() is:\n";
   resourceLimits.getCooperativeMatrixPropertiesNv().dump();
   auto properties = resourceLimits.getCooperativeMatrixPropertiesNv()
                         .getAsRange<spirv::CooperativeMatrixPropertiesNVAttr>();
@@ -46,12 +46,12 @@ static Optional<JointMatrixSize> getJointMatrixSize(
         property.getScope().getValue() == spirv::Scope::Subgroup) {
       int matmulM = property.getMSize();
       int matmulN = property.getNSize();
-      int matmulK = property.getKSize();
-      if (m % matmulM == 0 && n % matmulN == 0 && k % matmulK == 0) {
-        return JointMatrixSize{matmulM, matmulN, matmulK};
+      int matmulK = property.getKSize();*/
+      if (m % 16 == 0 && n % 16 == 0 && k % 16 == 0) {
+        return JointMatrixSize{16, 16, 16};
       }
-    }
-  }
+    /*}
+  }*/
   return llvm::None;
 }
 
