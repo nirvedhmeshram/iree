@@ -33,6 +33,8 @@ iree_compiler_cc_library(
         "SPIRVTileAndPromote.cpp",
         "SPIRVTileAndVectorizeToCooperativeOps.cpp",
         "SPIRVVectorToCooperativeOps.cpp",
+        "SPIRVTileAndVectorizeToJointOps.cpp",
+        "SPIRVVectorToJointOps.cpp",
         "SPIRVVectorize.cpp",
         "SPIRVVectorizeLoadStore.cpp",
         "SPIRVVectorizePad.cpp",

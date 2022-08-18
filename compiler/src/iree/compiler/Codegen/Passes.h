@@ -390,6 +390,11 @@ void addSPIRVTileAndVectorizePassPipeline(OpPassManager &pm);
 void addSPIRVTileAndVectorizeToCooperativeOpsPassPipeline(OpPassManager &pm);
 
 /// Pass pipeline to lower IREE HAL executables with workgroup tiled and
+/// distributed Linalg ops to SPIR-V joint matrix code. Additionally
+/// performs distribution to threads with vectorization.
+void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm);
+
+/// Pass pipeline to lower IREE HAL executables with workgroup tiled and
 /// distributed Linalg ops to SPIR-V scalar and vector code. Additionally
 /// performs distribution to threads with vectorization and promotion to use
 /// workgroup memory.
@@ -424,10 +429,20 @@ std::unique_ptr<OperationPass<func::FuncOp>> createSPIRVTileAndPromotePass();
 std::unique_ptr<OperationPass<func::FuncOp>>
 createSPIRVTileAndVectorizeToCooperativeOpsPass();
 
+/// Pass to tile Linalg ops with buffer semantics to subgroups and vectorize to
+/// vector ops suitable for lowering to SPIR-V joint ops.
+std::unique_ptr<OperationPass<func::FuncOp>>
+createSPIRVTileAndVectorizeToJointOpsPass();
+
 /// Pass to convert vector read/write/arithmetic operations to the corresponding
 /// cooperative matrix ops when possible.
 std::unique_ptr<OperationPass<func::FuncOp>>
 createSPIRVVectorToCooperativeOpsPass();
+
+/// Pass to convert vector read/write/arithmetic operations to the corresponding
+/// joint matrix ops when possible.
+std::unique_ptr<OperationPass<func::FuncOp>>
+createSPIRVVectorToJointOpsPass();
 
 /// Pass to tile Linalg ops with tensor semantics to invocations.
 std::unique_ptr<OperationPass<func::FuncOp>> createSPIRVTilePass();
