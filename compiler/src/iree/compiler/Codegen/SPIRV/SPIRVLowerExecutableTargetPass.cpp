@@ -109,6 +109,11 @@ void SPIRVLowerExecutableTargetPass::runOnOperation() {
             executableLoweringPipeline);
         break;
       case IREE::Codegen::DispatchLoweringPassPipeline::
+          SPIRVVectorizeToJointOps:
+        addSPIRVTileAndVectorizeToJointOpsPassPipeline(
+            executableLoweringPipeline);
+        break;
+      case IREE::Codegen::DispatchLoweringPassPipeline::
           SPIRVVectorizeWithWorkgroupMemory:
         addSPIRVTileAndVectorizeWithWorkgroupMemoryPassPipeline(
             executableLoweringPipeline);
