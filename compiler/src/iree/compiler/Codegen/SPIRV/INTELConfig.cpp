@@ -16,6 +16,7 @@
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
+#include <iostream>
 
 #define DEBUG_TYPE "iree-spirv-intel-config"
 
@@ -34,8 +35,10 @@ struct JointMatrixSize {
 static Optional<JointMatrixSize> getJointMatrixSize(
     spirv::ResourceLimitsAttr resourceLimits, Type lhsType, Type rhsType,
     Type resultType, int64_t m, int64_t n, int64_t k) {
+    std::cout<<"resourceLimits.getCooperativeMatrixPropertiesNv() is:\n";
+  resourceLimits.getCooperativeMatrixPropertiesNv().dump();
   auto properties = resourceLimits.getCooperativeMatrixPropertiesNv()
-                        .getAsRange<spirv::JointMatrixPropertiesINTELAttr>();
+                        .getAsRange<spirv::CooperativeMatrixPropertiesNVAttr>();
   for (auto property : properties) {
     if (property.getAType() == lhsType && property.getBType() == rhsType &&
         property.getCType() == resultType &&
@@ -55,8 +58,10 @@ static Optional<JointMatrixSize> getJointMatrixSize(
 static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
                                  linalg::MatmulOp op) {
   // This configuration is only for joint matrix.
+  std::cout<<"In the set op config\n";
   if (!targetEnv.allows(spirv::Capability::JointMatrixINTEL) ||
       !targetEnv.allows(spirv::Extension::SPV_INTEL_joint_matrix)) {
+    std::cout<<"Taking the early return\n";
     return success();
   }
 
@@ -81,8 +86,9 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
   auto coopMatSize = getJointMatrixSize(
       resourceLimits, getElementType(lhs), getElementType(rhs),
       getElementType(init), lhsShape[0], rhsShape[1], lhsShape[1]);
+  std::cout<<"Last check before assigning pipeline\n";
   if (!coopMatSize) return success();
-
+  std::cout<<"We do dispatch to joinstops\n";
   auto pipeline = IREE::Codegen::DispatchLoweringPassPipeline::
       SPIRVVectorizeToJointOps;
 
@@ -111,14 +117,16 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
 
 LogicalResult setINTELCodeGenConfig(const spirv::TargetEnv &targetEnv,
                                      Operation *rootOp) {
+  std::cout<<"In INTEL config\n";
   int subgroupSize = targetEnv.getResourceLimits().getSubgroupSize();
 
   // First try to see if we can use tensor cores.
   if (auto matmulOp = dyn_cast<linalg::MatmulOp>(rootOp)) {
-    if (failed(setOpConfig(targetEnv, matmulOp))) return failure();
-    if (getLoweringConfig(rootOp)) return success();
+    std::cout<<"We have found a matmul\n";
+    if (failed(setOpConfig(targetEnv, matmulOp))) { std::cout<<"It failed on us\n"; return failure();}
+    if (getLoweringConfig(rootOp)) { std::cout<<"It succeeded on us\n"; return success();}
   }
-
+  std::cout<<"It is here and it shouldnt be?\n";
   if (isa<linalg::BatchMatmulOp, linalg::MatmulOp>(rootOp)) {
     std::array<int64_t, 2> workgroupXY = {subgroupSize, 8};
     std::array<int64_t, 3> threadMNK = {4, 4, 32};
