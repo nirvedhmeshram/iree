@@ -87,7 +87,7 @@ struct ConvertVectorTransferOp final
     if (auto readOp = dyn_cast<vector::TransferReadOp>(*op)) {
       vector::TransferReadOp::Adaptor adaptor(operands,
                                               op->getAttrDictionary());
-      Value bufferPtr = spirv::getElementPtr(
+      Value bufferPtr = spirv::getElementPtrDirect(
           *getTypeConverter<SPIRVTypeConverter>(), memrefType,
           adaptor.getSource(), adaptor.getIndices(), loc, rewriter);
       rewriter.replaceOpWithNewOp<spirv::JointMatrixLoadINTELOp>(
@@ -99,7 +99,7 @@ struct ConvertVectorTransferOp final
     if (auto writeOp = dyn_cast<vector::TransferWriteOp>(*op)) {
       vector::TransferWriteOp::Adaptor adaptor(operands,
                                                op->getAttrDictionary());
-      Value bufferPtr = spirv::getElementPtr(
+      Value bufferPtr = spirv::getElementPtrDirect(
           *getTypeConverter<SPIRVTypeConverter>(), memrefType,
           adaptor.getSource(), adaptor.getIndices(), loc, rewriter);
       rewriter.create<spirv::JointMatrixStoreINTELOp>(
@@ -240,7 +240,7 @@ struct SPIRVVectorToJointOpsPass final
           // In IREE all MemRefs are originated from subspan ops, which should
           // have identity layout.
           if (!type.getLayout().isIdentity()) return llvm::None;
-          auto storage = spirv::mapMemorySpaceToVulkanStorageClass(
+          auto storage = spirv::mapMemorySpaceToOpenCLStorageClass(
               type.getMemorySpaceAsInt());
           auto flattenedType = MemRefType::get(
               ShapedType::kDynamicSize, type.getElementType(), AffineMap(),
