@@ -191,6 +191,18 @@ Optional<SmallVector<int64_t, 4>> getJointOpVectorShape(
     return llvm::to_vector<4>(sliceType.getShape());
   }
 
+    if (auto extOp = dyn_cast<arith::ExtFOp>(op)) {
+    VectorType sliceType;
+    for (Operation *users : op->getUsers()) {
+      auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
+      if (!extract) return llvm::None;
+      auto vecType = extract.getResult().getType().cast<VectorType>();
+      if (sliceType && sliceType != vecType) return llvm::None;
+      sliceType = vecType;
+    }
+    return llvm::to_vector<4>(sliceType.getShape());
+  }
+
   return llvm::None;
 }
 

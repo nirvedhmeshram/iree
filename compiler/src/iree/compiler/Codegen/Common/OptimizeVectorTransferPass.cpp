@@ -15,6 +15,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
+#include <iostream>
 
 namespace mlir {
 namespace iree_compiler {
@@ -76,6 +77,32 @@ class TransposeUnitDimToShapeCast
   }
 };
 
+class FoldExtIntoContract
+    : public OpRewritePattern<vector::ContractionOp> {
+ public:
+  using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::ContractionOp op,
+                                PatternRewriter& rewriter) const override {
+    std::cout<<"In the vector level pass for SPIRV\n";
+    if(auto readop = dyn_cast<vector::TransferReadOp>(op.getLhs().getDefiningOp())){
+    std::cout<<"This is the good case do nothing\n";
+    return failure();
+    }
+    std::cout<<"This case needs handling\n";
+    //auto indexingMaps = op.getIndexingMapsArray();
+    //auto iteratorTypes = op.getIteratorTypes();
+    auto parentOpLhs = op.getLhs().getDefiningOp()->getOperands()[0].getDefiningOp();
+auto parentOpRhs = op.getRhs().getDefiningOp()->getOperands()[0].getDefiningOp();
+
+    rewriter.replaceOpWithNewOp<vector::ContractionOp>(op, op.getResultType(),parentOpLhs->getResults()[0],parentOpRhs->getResults()[0] ,op.getAcc(),
+        op.getMasks(),
+        rewriter.getAffineMapArrayAttr(op.getIndexingMapsArray()),
+        op.getIteratorTypes(), op.getKind());
+    return success();
+  }
+};
+
 static void loopInvariantCodeMotion(func::FuncOp funcOp) {
   // Walk through all loops in a function in innermost-loop-first order. This
   // way, we first LICM from the inner loop, and place the ops in
@@ -92,6 +119,16 @@ struct OptimizeVectorTransferPass
     // Generate vector.shape_cast for dropping leading one dimensions in vector
     // ops. This increases the chance that we can forward more transfer writes
     // to transfer reads.
+    
+    {
+      RewritePatternSet patterns(&getContext());
+      patterns.add<FoldExtIntoContract>(&getContext());
+      if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+
+    }
+    
     {
       RewritePatternSet patterns(&getContext());
       mlir::vector::populateCastAwayVectorLeadingOneDimPatterns(patterns);

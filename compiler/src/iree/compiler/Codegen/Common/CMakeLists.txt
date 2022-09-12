@@ -97,6 +97,7 @@ iree_cc_library(
     "TypePropagationPass.cpp"
     "VectorizeConv.cpp"
     "WorkGroupSwizzle.cpp"
+    "SPIRVMatchJointLoadPass.cpp"
   DEPS
     ::TransformDialectInterpreterPass
     IREELinalgExtDialect

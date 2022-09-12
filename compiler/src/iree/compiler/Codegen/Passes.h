@@ -109,6 +109,9 @@ std::unique_ptr<OperationPass<func::FuncOp>> createVectorizePadPass();
 std::unique_ptr<OperationPass<func::FuncOp>> createOptimizeVectorTransferPass(
     bool flatten = false);
 
+/// Pass to match joint matrix load have same matrix layout in op and operand
+std::unique_ptr<OperationPass<func::FuncOp>> createSPIRVMatchJointLoadPass();
+
 /// Pass to test Partitionable loop interface
 std::unique_ptr<OperationPass<void>>
 createTestPartitionableLoopsInterfacePass();

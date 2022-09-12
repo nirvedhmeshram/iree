@@ -27,6 +27,7 @@
 #include "mlir/Interfaces/VectorInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <iostream>
 
 using namespace mlir;
 
@@ -81,8 +82,17 @@ struct ConvertVectorTransferOp final
         loc, i32Type, IntegerAttr::get(i32Type, stride));
     /*auto coloumnMajor = rewriter.create<spirv::ConstantOp>(
         loc, rewriter.getI1Type(), rewriter.getBoolAttr(false));*/
-
-    Type matType = typeConverter->convertType(vectorType);
+    //Type matType = typeConverter->convertType(vectorType);
+    //std::cout<<"type convertor\n";
+    //matType.dump();
+    Type matType1 = spirv::JointMatrixINTELType::get(
+                vectorType.getElementType(), spirv::Scope::Subgroup, vectorType.getDimSize(0),
+                vectorType.getDimSize(1), spirv::MatrixLayout::RowMajor);
+    //std::cout<<"manual convertor\n";
+   // matType1.dump();
+    /*Type matTypePackedB = spirv::JointMatrixINTELType::get(
+                vectorType, spirv::Scope::Subgroup, vectorType.getDimSize(0),
+                vectorType.getDimSize(1), spirv::MatrixLayout::PackedB);*/
 
     if (auto readOp = dyn_cast<vector::TransferReadOp>(*op)) {
       vector::TransferReadOp::Adaptor adaptor(operands,
@@ -90,11 +100,34 @@ struct ConvertVectorTransferOp final
       Value bufferPtr = spirv::getElementPtrDirect(
           *getTypeConverter<SPIRVTypeConverter>(), memrefType,
           adaptor.getSource(), adaptor.getIndices(), loc, rewriter);
+  for (Operation *user : op->getUsers()) {
+    std::cout<<"checking uses\n";
+    auto contract = dyn_cast<vector::ContractionOp>(user);
+    if (!contract)
+      return failure();
+    if (contract.getLhs() == op->getResult(0)) {
+      std::cout<<"Use 1\n";
       rewriter.replaceOpWithNewOp<spirv::JointMatrixLoadINTELOp>(
-          op, matType,spirv::Scope::Subgroup,spirv::MatrixLayout::ColumnMajor,
+          op, matType1,spirv::Scope::Subgroup,spirv::MatrixLayout::RowMajor,
           bufferPtr, strideValue,spirv::MemoryAccessAttr(),IntegerAttr());
       return success();
     }
+    if (contract.getRhs() == op->getResult(0)) {
+      std::cout<<"Use 2\n";
+      rewriter.replaceOpWithNewOp<spirv::JointMatrixLoadINTELOp>(
+          op, matType1,spirv::Scope::Subgroup,spirv::MatrixLayout::PackedB,
+          bufferPtr, strideValue,spirv::MemoryAccessAttr(),IntegerAttr());
+      return success();
+    }
+      if (contract.getAcc() == op->getResult(0)) {
+      std::cout<<"Use 3\n";
+      rewriter.replaceOpWithNewOp<spirv::JointMatrixLoadINTELOp>(
+          op, matType1,spirv::Scope::Subgroup,spirv::MatrixLayout::RowMajor,
+          bufferPtr, strideValue,spirv::MemoryAccessAttr(),IntegerAttr());
+      return success();
+    }
+  }
+}
 
     if (auto writeOp = dyn_cast<vector::TransferWriteOp>(*op)) {
       vector::TransferWriteOp::Adaptor adaptor(operands,
@@ -103,7 +136,7 @@ struct ConvertVectorTransferOp final
           *getTypeConverter<SPIRVTypeConverter>(), memrefType,
           adaptor.getSource(), adaptor.getIndices(), loc, rewriter);
       rewriter.create<spirv::JointMatrixStoreINTELOp>(
-          loc, spirv::Scope::Subgroup,spirv::MatrixLayout::ColumnMajor, 
+          loc, spirv::Scope::Subgroup,spirv::MatrixLayout::RowMajor, 
           bufferPtr, adaptor.getVector(), strideValue,
           spirv::MemoryAccessAttr(),IntegerAttr());
       rewriter.eraseOp(op);
@@ -215,13 +248,15 @@ struct SPIRVVectorToJointOpsPass final
     // pipeline is feasible and also in SPIR-V ConversionTarget.
     typeConverter.addConversion(
         [&typeConverter](VectorType type) -> Optional<Type> {
+          
           if (type.getRank() != 2) return llvm::None;
 
           Type elementType = typeConverter.convertType(type.getElementType());
           return spirv::JointMatrixINTELType::get(
               elementType, spirv::Scope::Subgroup, type.getDimSize(0),
-              type.getDimSize(1), spirv::MatrixLayout::ColumnMajor);
+                type.getDimSize(1), spirv::MatrixLayout::RowMajor);
         });
+
 
     // Inject another conversion rule for MemRef types.
     //

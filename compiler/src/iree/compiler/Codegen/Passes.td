@@ -99,6 +99,13 @@ def OptimizeVectorTransfer :
   ];
 }
 
+def SPIRVMatchJointLoad :
+    Pass<"iree-codegen-spirv-match-joint-load", "func::FuncOp"> {
+  let summary =
+      "Run cleanup on joint matrix loads";
+  let constructor = "mlir::iree_compiler::createSPIRVMatchJointLoadPass()";
+}
+
 
 def TestPartitionableLoopsInterface :
     Pass<"iree-codegen-test-partitionable-loops-interface", ""> {

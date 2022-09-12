@@ -151,11 +151,11 @@ class OpenCLSPIRVTargetBackend : public TargetBackend {
       return variantOp.emitError() << "failed to serialize spv.module";
     }
 
-    // if (!options.dumpBinariesPath.empty()) {
-    //   dumpDataToPath<uint32_t>(options.dumpBinariesPath,
-    //   options.dumpBaseName,
-    //                            variantOp.getName(), ".spv", spvBinary);
-    // }
+     if (!options.dumpBinariesPath.empty()) {
+       dumpDataToPath<uint32_t>(options.dumpBinariesPath,
+       options.dumpBaseName,
+                                variantOp.getName(), ".spv", spvBinary);
+     }
 
     auto spvCodeRef = flatbuffers_uint32_vec_create(builder, spvBinary.data(),
                                                     spvBinary.size());
@@ -166,6 +166,7 @@ class OpenCLSPIRVTargetBackend : public TargetBackend {
     SmallVector<StringRef, 8> entryPointNames;
     std::vector<SmallVector<int32_t, 3>> workgroupSizes;
     spvModuleOp.walk([&](spirv::ExecutionModeOp executionModelOp) {
+      executionModelOp.dump();
       entryPointNames.push_back(executionModelOp.fn());
       ArrayAttr workGroupSizeAttr = executionModelOp.values();
       assert(workGroupSizeAttr.size() == 3 &&

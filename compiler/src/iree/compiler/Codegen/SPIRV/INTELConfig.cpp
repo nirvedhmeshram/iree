@@ -47,8 +47,8 @@ static Optional<JointMatrixSize> getJointMatrixSize(
       int matmulM = property.getMSize();
       int matmulN = property.getNSize();
       int matmulK = property.getKSize();*/
-      if (m % 16 == 0 && n % 16 == 0 && k % 16 == 0) {
-        return JointMatrixSize{16, 16, 16};
+      if (m % 8 == 0 && n % 8 == 0 && k % 16 == 0) {
+        return JointMatrixSize{8, 8, 16};
       }
     /*}
   }*/
@@ -99,7 +99,7 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
   // TODO: Use some heuristics to deduce how many subgroups should be used and
   // the tile sizes for each subgroup, considering the input workload size and
   // native joint matrix size choices.
-  int subgroupSize = resourceLimits.getSubgroupSize();
+  int subgroupSize = 8;//resourceLimits.getSubgroupSize();
   std::array<int64_t, 3> workgroupSize = {subgroupSize, 1, 1};
 
   TileSizesListType tileSizes;
@@ -118,7 +118,8 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
 LogicalResult setINTELCodeGenConfig(const spirv::TargetEnv &targetEnv,
                                      Operation *rootOp) {
   std::cout<<"In INTEL config\n";
-  int subgroupSize = targetEnv.getResourceLimits().getSubgroupSize();
+  int subgroupSize = 8;//targetEnv.getResourceLimits().getSubgroupSize();
+  std::cout<<"subgroup size"<<subgroupSize<<std::endl;
 
   // First try to see if we can use tensor cores.
   if (auto matmulOp = dyn_cast<linalg::MatmulOp>(rootOp)) {

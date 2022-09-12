@@ -46,7 +46,7 @@ static FailureOr<Value> gpuAllocateWorkgroupMemoryFn(OpBuilder &builder,
                                                      ValueRange dynamicSizes,
                                                      unsigned alignment) {
   Optional<unsigned> space =
-      spirv::mapVulkanStorageClassToMemorySpace(spirv::StorageClass::Workgroup);
+      spirv::mapOpenCLStorageClassToMemorySpace(spirv::StorageClass::Workgroup);
   MemRefType allocType = MemRefType::get(
       memRefType.getShape(), memRefType.getElementType(), {}, *space);
   return builder
@@ -296,6 +296,10 @@ void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm) {
 
   nestedModulePM.addNestedPass<func::FuncOp>(
       createSPIRVVectorToJointOpsPass());
+
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createSPIRVMatchJointLoadPass());
+  
 }
 
 void addSPIRVTileAndVectorizeWithWorkgroupMemoryPassPipeline(
