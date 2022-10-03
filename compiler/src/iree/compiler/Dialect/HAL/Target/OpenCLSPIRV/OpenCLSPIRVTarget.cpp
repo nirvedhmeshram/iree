@@ -181,6 +181,7 @@ class OpenCLSPIRVTargetBackend : public TargetBackend {
     SmallVector<StringRef, 8> entryPointNames;
     std::vector<SmallVector<int32_t, 3>> workgroupSizes;
     spvModuleOp.walk([&](spirv::ExecutionModeOp executionModelOp) {
+      if(executionModelOp.getExecutionMode() == spirv::ExecutionMode::LocalSize){
       entryPointNames.push_back(executionModelOp.getFn());
       ArrayAttr workGroupSizeAttr = executionModelOp.getValues();
       assert(workGroupSizeAttr.size() == 3 &&
@@ -189,6 +190,7 @@ class OpenCLSPIRVTargetBackend : public TargetBackend {
           {int(workGroupSizeAttr[0].dyn_cast<IntegerAttr>().getInt()),
            int(workGroupSizeAttr[1].dyn_cast<IntegerAttr>().getInt()),
            int(workGroupSizeAttr[2].dyn_cast<IntegerAttr>().getInt())});
+      }
     });
     // if (!options.dumpBinariesPath.empty()) {
     // dumpDataToPath<uint32_t>("/tmp", entryPointNames[0],

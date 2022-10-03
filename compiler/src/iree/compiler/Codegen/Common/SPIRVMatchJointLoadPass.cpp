@@ -33,7 +33,7 @@ class FoldExtIntoContract
   LogicalResult matchAndRewrite(spirv::INTELJointMatrixLoadOp op,
                                 PatternRewriter& rewriter) const override {
     std::cout<<"In the SPIRV level pass for SPIRV\n";
-    auto opLayout= op.layout();
+    auto opLayout= op.getLayout();
     auto result = op.getResult();
     auto jointMatrixType =
           result.getType().dyn_cast<spirv::JointMatrixINTELType>();
@@ -47,7 +47,7 @@ class FoldExtIntoContract
                 jointMatrixType.getElementType(), spirv::Scope::Subgroup, jointMatrixType.getRows(),
                 jointMatrixType.getColumns(), opLayout);
       rewriter.replaceOpWithNewOp<spirv::INTELJointMatrixLoadOp> (op,newJointMatrixType,
-      op.pointer(),op.stride(), opLayout, spirv::Scope::Subgroup,
+      op.getPointer(),op.getStride(), opLayout, spirv::Scope::Subgroup,
                 spirv::MemoryAccessAttr(),IntegerAttr());
       return success();
 
@@ -62,7 +62,7 @@ class CastJointMatrixLoadProducerPtr
   LogicalResult matchAndRewrite(spirv::INTELJointMatrixLoadOp op,
                                 PatternRewriter& rewriter) const override {
     
-     auto opPointer= op.pointer();
+     auto opPointer= op.getPointer();
      auto pointerType = opPointer.getType().cast<spirv::PointerType>();
      auto pointerStorage = pointerType.getStorageClass();
      if (pointerStorage == spirv::StorageClass::Generic)
@@ -71,7 +71,7 @@ class CastJointMatrixLoadProducerPtr
     auto newPointerType = spirv::PointerType::get(pointerType.getPointeeType(),spirv::StorageClass::Generic);
     Value newPtr = rewriter.create<spirv::PtrCastToGenericOp>(loc,newPointerType,opPointer);
       rewriter.replaceOpWithNewOp<spirv::INTELJointMatrixLoadOp> (op,op.getResult().getType(),
-      newPtr,op.stride(), op.layout(), spirv::Scope::Subgroup,
+      newPtr,op.getStride(), op.getLayout(), spirv::Scope::Subgroup,
                 spirv::MemoryAccessAttr(),IntegerAttr());
     return success();
   }
@@ -85,7 +85,7 @@ class CastJointMatrixStoreProducerPtr
   LogicalResult matchAndRewrite(spirv::INTELJointMatrixStoreOp op,
                                 PatternRewriter& rewriter) const override {
     
-     auto opPointer= op.pointer();
+     auto opPointer= op.getPointer();
      auto pointerType = opPointer.getType().cast<spirv::PointerType>();
      auto pointerStorage = pointerType.getStorageClass();
      if (pointerStorage == spirv::StorageClass::Generic)
@@ -94,7 +94,7 @@ class CastJointMatrixStoreProducerPtr
     auto newPointerType = spirv::PointerType::get(pointerType.getPointeeType(),spirv::StorageClass::Generic);
     Value newPtr = rewriter.create<spirv::PtrCastToGenericOp>(loc,newPointerType,opPointer);
       rewriter.replaceOpWithNewOp<spirv::INTELJointMatrixStoreOp> (op,
-      newPtr,op.object(),op.stride(), op.layout(), spirv::Scope::Subgroup,
+      newPtr,op.getObject(),op.getStride(), op.getLayout(), spirv::Scope::Subgroup,
                 spirv::MemoryAccessAttr(),IntegerAttr());
     return success();
   }

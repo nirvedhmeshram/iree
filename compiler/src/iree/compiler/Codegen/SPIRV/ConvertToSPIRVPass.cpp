@@ -485,6 +485,23 @@ struct RemoveIdentityConversionCast final
   }
 };
 
+/// Removes unrealized_conversion_cast ops introduced during progressive
+/// lowering when possible.
+struct RemoveDeadConversionCast final
+    : public OpConversionPattern<UnrealizedConversionCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult matchAndRewrite(
+      UnrealizedConversionCastOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    auto uses = op->getUses();
+    if (uses.empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Conversion pass
 //===----------------------------------------------------------------------===//

@@ -33,6 +33,10 @@ using mlir::iree_compiler::IREE::LinalgExt::TilingPatterns;
 
 #define DEBUG_TYPE "iree-llvmgpu-tile-and-distribute"
 
+  static llvm::cl::opt<bool> clCodegenDisablePromotion(
+      "iree-codegen-disable-promotion", llvm::cl::desc("not use shared memory"),
+      llvm::cl::init(false));
+
 namespace mlir {
 namespace iree_compiler {
 
@@ -324,7 +328,7 @@ struct LLVMGPUTileAndDistributePass
 
     // Promote C matrix and propagate the potential  fill producer into the temp
     // allocation. This needs to be done before reduction tiling.
-    {
+    /*{
       RewritePatternSet promotionPatterns(&getContext());
       populatePromotionPatterns(context, promotionPatterns, contractOpFilter,
                                 {2});
@@ -333,7 +337,7 @@ struct LLVMGPUTileAndDistributePass
         return signalPassFailure();
       }
       propagateSharedMemCopy(funcOp);
-    }
+    }*/
 
     // Tile again at the workgroup level since reduction dimension were
     // ignored. Dimensions already tiled will be ignore since we tile to the
@@ -357,9 +361,10 @@ struct LLVMGPUTileAndDistributePass
     //if (flatWorkgroupSize > kWarpSize) {
       //if(0){
       RewritePatternSet promotionPatterns(&getContext());
-
+      if(!clCodegenDisablePromotion){
       populatePromotionPatterns(context, promotionPatterns, contractOpFilter,
                                 {0, 1});
+      }
 
       if (failed(applyPatternsAndFoldGreedily(funcOp,
                                               std::move(promotionPatterns)))) {
