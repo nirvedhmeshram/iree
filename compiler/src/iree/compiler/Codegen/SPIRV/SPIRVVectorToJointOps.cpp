@@ -248,9 +248,11 @@ struct SPIRVVectorToJointOpsPass final
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     func::FuncOp funcOp = getOperation();
-
+    SPIRVConversionOptions options = {};
+    options.enableFastMathMode = false;
+    options.use64bitIndex = true;
     spirv::TargetEnvAttr targetAttr = getSPIRVTargetEnvAttr(funcOp);
-    SPIRVTypeConverter typeConverter(targetAttr);
+    SPIRVTypeConverter typeConverter(targetAttr,options);
 
     // Inject conversion rules for 2-D vector types to joint matrix types.
     //

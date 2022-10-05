@@ -226,6 +226,9 @@ static void addMemRefLoweringPasses(OpPassManager &pm) {
   // Turn multi-dimension memref into one-dimension. This is needed for SPIR-V
   // because we don't use upstream memref descriptors.
   pm.addPass(createFlattenMemRefSubspanPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createFoldMemRefCastPass());
 }
 
 /// Adds passes to perform the final SPIR-V conversion.
@@ -320,18 +323,22 @@ void addSPIRVTileAndVectorizeToCooperativeOpsPassPipeline(OpPassManager &pm) {
 }
 
 void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm) {
-  /*addTileAndDistributeToWorkgroupsPasses(pm);
+  addTileAndDistributeToWorkgroupsPasses(pm);
 
   auto &nestedModulePM = pm.nest<ModuleOp>();
+  nestedModulePM.addNestedPass<func::FuncOp>(
+      createRemoveSingleIterationLoopPass());
+  // Distribute linalg onto threads within the workgroup.
+  nestedModulePM.addNestedPass<func::FuncOp>(createPackedBLayoutPass());
 
   addBufferizePasses(nestedModulePM, gpuAllocateWorkgroupMemoryFn);
 
   nestedModulePM.addPass(createCanonicalizerPass());
-  nestedModulePM.addPass(createCSEPass());*/
+  nestedModulePM.addPass(createCSEPass());
 
-  tileAndBufferize(pm);
+  //tileAndBufferize(pm);
 
-  auto &nestedModulePM = pm.nest<ModuleOp>();
+  //auto &nestedModulePM = pm.nest<ModuleOp>();
   // Distribute linalg onto warps within the workgroup.
   nestedModulePM.addNestedPass<func::FuncOp>(
       createLLVMGPUTileAndDistribute(/*distributeToWarp=*/true));

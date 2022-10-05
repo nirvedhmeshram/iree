@@ -61,6 +61,8 @@ std::unique_ptr<Pass> createDecomposeLinalgGenericPass();
 /// backends that require linearized access.
 std::unique_ptr<OperationPass<ModuleOp>> createFlattenMemRefSubspanPass();
 
+std::unique_ptr<OperationPass<ModuleOp>> createFoldMemRefCastPass();
+
 /// Creates a pass to fold `affine.min` ops in tiled and distributed loops.
 std::unique_ptr<OperationPass<func::FuncOp>>
 createFoldAffineMinInDistributedLoopsPass();
@@ -124,6 +126,9 @@ std::unique_ptr<OperationPass<>> createPolynomialApproximationPass();
 
 /// Creates a pass to convert memref.copy to linalg op.
 std::unique_ptr<OperationPass<func::FuncOp>> createMemrefCopyToLinalgPass();
+
+/// Creates a pass to convert linalg.matmul to a PackedB layout.
+std::unique_ptr<OperationPass<func::FuncOp>> createPackedBLayoutPass();
 
 /// Convert GPU shared memory copies to distributed
 /// transfer_read/transfer_write.

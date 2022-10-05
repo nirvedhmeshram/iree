@@ -485,22 +485,31 @@ struct RemoveIdentityConversionCast final
   }
 };
 
-/// Removes unrealized_conversion_cast ops introduced during progressive
-/// lowering when possible.
-struct RemoveDeadConversionCast final
+/// Convert left over UnrealizedConversionCastOp to AccessChain
+struct ConversionCastToAccessChain final
     : public OpConversionPattern<UnrealizedConversionCastOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult matchAndRewrite(
       UnrealizedConversionCastOp op, OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
-    auto uses = op->getUses();
-    if (uses.empty()) {
-      rewriter.eraseOp(op);
+    if (op->getNumOperands() == 1 && op->getNumResults() == 1) {
+      auto loc = op.getLoc();
+      if(auto memrefType = op->getOperands().front().getType().dyn_cast<MemRefType>()){
+      auto &typeConverter = *getTypeConverter<SPIRVTypeConverter>();
+      auto indexType = typeConverter.getIndexType();
+      Value linearIndex = spirv::ConstantOp::getZero(indexType, loc, rewriter);
+      Value basePtr = spirv::getElementPtr(
+          typeConverter, memrefType,
+          adaptor.getOperands().front(), ValueRange{linearIndex}, loc, rewriter);
+      rewriter.replaceOp(op, basePtr);
       return success();
+      }
     }
+
     return failure();
   }
 };
+
 
 //===----------------------------------------------------------------------===//
 // Conversion pass
@@ -645,7 +654,7 @@ void ConvertToSPIRVPass::runOnOperation() {
   patterns.insert<
       FoldAsNoOp<memref::CollapseShapeOp>, FoldAsNoOp<memref::ExpandShapeOp>,
       FoldAsNoOp<bufferization::ToMemrefOp>, RemoveIdentityConversionCast,
-      FoldAsNoOp<memref::CastOp>>(
+      ConversionCastToAccessChain,FoldAsNoOp<memref::CastOp>>(
       typeConverter, context);
 
   std::unique_ptr<ConversionTarget> target =

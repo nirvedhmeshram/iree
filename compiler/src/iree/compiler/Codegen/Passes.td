@@ -49,6 +49,12 @@ def FlattenMemRefSubspan :
   let constructor = "mlir::iree_compiler::createFlattenMemRefSubspanPass()";
 }
 
+def FoldMemRefCast :
+  Pass<"iree-codegen-fold-memref-cast", "ModuleOp"> {
+  let summary =
+      "Fold MemRef casts";
+  let constructor = "mlir::iree_compiler::createFoldMemRefCastPass()";
+}
 def FoldAffineMinInDistributedLoops :
   Pass<"iree-codegen-fold-affinemin-in-distributed-loops", "func::FuncOp"> {
   let summary = "Fold `affine.min` ops in distributed loops";
@@ -151,6 +157,13 @@ def MemrefCopyToLinalgPass :
   let summary = "Convert memref.copy to linalg op";
   let constructor =
       "mlir::iree_compiler::createMemrefCopyToLinalgPass()";
+}
+
+def PackedBLayoutPass :
+    Pass<"iree-codegen-packedB", "func::FuncOp"> {
+  let summary = "Convert memref.copy to linalg op";
+  let constructor =
+      "mlir::iree_compiler::createPackedBLayoutPass()";
 }
 
 def GPUDistributeSharedMemoryCopy :
