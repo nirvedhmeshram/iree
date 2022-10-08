@@ -27,6 +27,7 @@
 #include "mlir/Interfaces/VectorInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <iostream>
 
 using namespace mlir;
@@ -39,6 +40,42 @@ namespace {
 //===----------------------------------------------------------------------===//
 // Op Conversion Patterns
 //===----------------------------------------------------------------------===//
+
+
+struct CombineTransferReadOpTranspose final
+    : public OpRewritePattern<vector::TransposeOp> {
+  using OpRewritePattern<vector::TransposeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransposeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto transferReadOp =
+        op.getVector().getDefiningOp<vector::TransferReadOp>();
+    if (!transferReadOp)
+      return failure();
+
+    // TODO: support 0-d corner case.
+    if (transferReadOp.getTransferRank() == 0)
+      return failure();
+
+    if (transferReadOp.getMask() || transferReadOp.hasOutOfBoundsDim())
+      return failure();
+    SmallVector<int64_t, 2> perm;
+    op.getTransp(perm);
+    SmallVector<unsigned, 2> permU;
+    for (int64_t o : perm)
+      permU.push_back(unsigned(o));
+    AffineMap permutationMap =
+        AffineMap::getPermutationMap(permU, op.getContext());
+    AffineMap newMap =
+        permutationMap.compose(transferReadOp.getPermutationMap());
+    rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
+        op, op.getType(), transferReadOp.getSource(),
+        transferReadOp.getIndices(), AffineMapAttr::get(newMap),
+        transferReadOp.getPadding(), transferReadOp.getMask(),
+        transferReadOp.getInBoundsAttr());
+    return success();
+  }
+};
 
 /// Converts vector transfer ops to SPIR-V joint matrix load/store ops.
 struct ConvertVectorTransferOp final
@@ -65,8 +102,8 @@ struct ConvertVectorTransferOp final
     // Expect 2-D vectors.
     std::cout<<"here B\n";
     auto vectorType = op.getVectorType();
-    if (vectorType.getRank() != 2) {
-    std::cout<<"Failing with\n";
+    if (vectorType.getRank() != 2 && vectorType.getRank() != 3) {
+    std::cout<<"Failing with"<<vectorType.getRank() <<"\n";
     op.dump();  
       return failure();
     }
@@ -93,15 +130,21 @@ struct ConvertVectorTransferOp final
     //Type matType = typeConverter->convertType(vectorType);
     //std::cout<<"type convertor\n";
     //matType.dump();
-    Type matType1 = spirv::JointMatrixINTELType::get(
+    Type matType1;
+    if(vectorType.getRank()==2)
+    matType1 = spirv::JointMatrixINTELType::get(
                 vectorType.getElementType(), spirv::Scope::Subgroup, vectorType.getDimSize(0),
                 vectorType.getDimSize(1), spirv::MatrixLayout::ColumnMajor);
+  if(vectorType.getRank()==3)
+    matType1 = spirv::JointMatrixINTELType::get(
+                vectorType.getElementType(), spirv::Scope::Subgroup, vectorType.getDimSize(0),
+                vectorType.getDimSize(1)*vectorType.getDimSize(2), spirv::MatrixLayout::ColumnMajor);
     //std::cout<<"manual convertor\n";
    // matType1.dump();
     /*Type matTypePackedB = spirv::JointMatrixINTELType::get(
                 vectorType, spirv::Scope::Subgroup, vectorType.getDimSize(0),
                 vectorType.getDimSize(1), spirv::MatrixLayout::PackedB);*/
-    std::cout<<"here 2\n";
+  std::cout<<"here 2\n";
     if (auto readOp = dyn_cast<vector::TransferReadOp>(*op)) {
       vector::TransferReadOp::Adaptor adaptor(operands,
                                               op->getAttrDictionary());
@@ -169,17 +212,17 @@ struct ConvertVectorContractOp final
     if (!llvm::empty(contractOp.getMasks())) return failure();
 
     // Check that this is a matmul operation.
-    auto iterators = contractOp.getIteratorTypes().getValue();
-    if (iterators.size() != 3 || !vector::isParallelIterator(iterators[0]) ||
+    //auto iterators = contractOp.getIteratorTypes().getValue();
+    /*if (iterators.size() != 3 || !vector::isParallelIterator(iterators[0]) ||
         !vector::isParallelIterator(iterators[1]) ||
         !vector::isReductionIterator(iterators[2])) {
       return failure();
-    }
+    }*/
     if (contractOp.getKind() != vector::CombiningKind::ADD) return failure();
 
     // Column major matmuls should have been lowered to transpose + contract
     // by this point. Transpose can be handled by load/store operations.
-    if (!isRowMajorMatmul(contractOp.getIndexingMapsAttr())) return failure();
+    //if (!isRowMajorMatmul(contractOp.getIndexingMapsAttr())) return failure();
 
     rewriter.replaceOpWithNewOp<spirv::INTELJointMatrixMadOp>(
         contractOp, operands.getAcc().getType(), operands.getLhs(),
@@ -198,7 +241,7 @@ struct ConvertConstantMatrix final
       ConversionPatternRewriter &rewriter) const override {
     // Only convert 2-D vector constants.
     auto vectorType = op.getType().dyn_cast<VectorType>();
-    if (!vectorType || vectorType.getRank() != 2) return failure();
+    if (!vectorType || (vectorType.getRank() != 2 && vectorType.getRank() != 3)) return failure();
 
     // Only convert splat integer/float vectors.
     auto values = op.getValue().dyn_cast<DenseIntOrFPElementsAttr>();
@@ -253,6 +296,13 @@ struct SPIRVVectorToJointOpsPass final
     options.use64bitIndex = true;
     spirv::TargetEnvAttr targetAttr = getSPIRVTargetEnvAttr(funcOp);
     SPIRVTypeConverter typeConverter(targetAttr,options);
+    RewritePatternSet patternsTranspose(&getContext());
+    patternsTranspose.add<CombineTransferReadOpTranspose>(
+          patternsTranspose.getContext());
+    if (failed(
+            applyPatternsAndFoldGreedily(getOperation(), std::move(patternsTranspose))))
+      return signalPassFailure();
+
 
     // Inject conversion rules for 2-D vector types to joint matrix types.
     //
@@ -262,12 +312,17 @@ struct SPIRVVectorToJointOpsPass final
     typeConverter.addConversion(
         [&typeConverter](VectorType type) -> Optional<Type> {
           
-          if (type.getRank() != 2) return llvm::None;
-
+          if (type.getRank() != 2 && type.getRank() != 3) return llvm::None;
           Type elementType = typeConverter.convertType(type.getElementType());
+          if(type.getRank() == 2){
           return spirv::JointMatrixINTELType::get(
               elementType, spirv::Scope::Subgroup, type.getDimSize(0),
                 type.getDimSize(1), spirv::MatrixLayout::ColumnMajor);
+          }
+          return spirv::JointMatrixINTELType::get(
+              elementType, spirv::Scope::Subgroup, type.getDimSize(0),
+                type.getDimSize(1)*type.getDimSize(2),spirv::MatrixLayout::ColumnMajor);
+
         });
 
 

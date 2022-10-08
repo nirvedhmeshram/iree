@@ -34,6 +34,7 @@
 #include "mlir/Interfaces/VectorInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include <iostream>
 
 using mlir::iree_compiler::IREE::LinalgExt::LinalgVectorizationPattern;
 using mlir::iree_compiler::IREE::LinalgExt::TilingPatterns;
@@ -150,6 +151,15 @@ void populateVectorizationPatterns(MLIRContext *context,
   linalg::LinalgVectorizationOptions opt;
   linalg::LinalgTransformationFilter f(
       StringAttr::get(context, getVectorizeMarker()));
+      f.addFilter([](Operation* op){
+        //return sucess only if has a reduction dimension
+        if(!isa<linalg::GenericOp>(op))
+          return success();
+        linalg::GenericOp genericOp = cast<linalg::GenericOp>(op);
+        SmallVector<unsigned> redDims;
+        genericOp.getReductionDims(redDims);
+        return success(redDims.size()!=0);
+        }).setMatchByDefault();
   VectorizationPatterns<linalg::FillOp, linalg::GenericOp>::insert(patterns,
                                                                    opt, f);
   patterns.add<LinalgVectorizationPattern>(
@@ -295,14 +305,17 @@ class SPIRVTileAndVectorizeToJointOpsPass final
     // decided earlier and attached to a linalg op as an attribute.
 
     linalg::LinalgOp rootOp;
-    funcOp.walk([&](linalg::ContractionOpInterface contractOp) {
-      if (getLoweringConfig(contractOp)) {
+    std::cout<<"Starting contract check\n";
+    funcOp.walk([&](linalg::LinalgOp contractOp) {
+
+      contractOp.dump();
+      if (linalg::isaContractionOpInterface(contractOp) && getLoweringConfig(contractOp)) {
         rootOp = cast<linalg::LinalgOp>(contractOp.getOperation());
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
-
+    std::cout<<"Done\n";
     if (!rootOp) {
       funcOp.emitError(
           "expected a linalg::ContractionOpInterface op with "
@@ -310,7 +323,7 @@ class SPIRVTileAndVectorizeToJointOpsPass final
       return signalPassFailure();
     }
 
-    SmallVector<int64_t> jointOpSize = getTargetJointOpSize(rootOp);
+    SmallVector<int64_t> jointOpSize = {8,8,8,2};//getTargetJointOpSize(rootOp);
     SmallVector<int64_t> subgroupCounts = deduceSubgroupCounts(rootOp);
 
     // Then tile and distribute to subgroups.

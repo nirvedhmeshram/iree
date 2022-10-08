@@ -15,11 +15,24 @@
 namespace mlir {
 namespace iree_compiler {
 
+
+static SmallVector<NamedAttribute> PruneAttributeList(linalg::MatmulOp op) {
+  auto opAttributes = op.getAttributeNames();
+  llvm::StringSet<> elidedAttrs;
+  elidedAttrs.insert(opAttributes.begin(), opAttributes.end());
+  SmallVector<NamedAttribute> preservedAttrs;
+  for (auto attr : op->getAttrs()) {
+    if (elidedAttrs.count(attr.getName())) continue;
+    preservedAttrs.push_back(attr);
+  }
+  return preservedAttrs;
+}
+
 namespace {
 
 // Creates a linalg.generic that transposes input using permutation indices.
 // Example: (M1, M0, N1, N0) -> (M1, N1, M0, N0) if indices = {0, 2, 1, 3}.
-static Value transpose(mlir::Location loc, PatternRewriter &rewriter,
+Value transpose(mlir::Location loc, PatternRewriter &rewriter,
                        Value input, ArrayRef<int64_t> indices) {
   RankedTensorType inputType = input.getType().cast<RankedTensorType>();
   auto nloops = indices.size();
@@ -63,10 +76,46 @@ static Value transpose(mlir::Location loc, PatternRewriter &rewriter,
 };
 
 // Creates a linalg.generic that does the compute after packedB layout
-static Value computeGeneric(mlir::Location loc, PatternRewriter &rewriter,
-                       Value inputLhs, Value inputRhs, linalg::MatmulOp MatmulOp) {
+Value computeGeneric(mlir::Location loc, PatternRewriter &rewriter,
+                       Value &inputLhs, Value &inputRhs, linalg::MatmulOp &matmulOp) {
+  auto nloops = 4;
+  std::array<int64_t,3> indicesLhs = {0,2,3};
+  std::array<int64_t,3> indicesRhs = {2,1,3};
+  std::array<int64_t,2> indicesResult = {0,1};
+  SmallVector<AffineExpr, 4> exprsLhs = llvm::to_vector<4>(
+      llvm::map_range(indicesLhs, [&](int64_t index) -> AffineExpr {
+        return rewriter.getAffineDimExpr(index);
+      }));
+  SmallVector<AffineExpr, 4> exprsRhs = llvm::to_vector<4>(
+      llvm::map_range(indicesRhs, [&](int64_t index) -> AffineExpr {
+        return rewriter.getAffineDimExpr(index);
+      }));
+  SmallVector<AffineExpr, 4> exprsResult = llvm::to_vector<4>(
+      llvm::map_range(indicesResult, [&](int64_t index) -> AffineExpr {
+        return rewriter.getAffineDimExpr(index);
+      }));
+  std::array<AffineMap,3> indexingMaps={
+    AffineMap::get(nloops, 0, exprsLhs, rewriter.getContext()),
+    AffineMap::get(nloops, 0, exprsRhs, rewriter.getContext()),
+    AffineMap::get(nloops, 0, exprsResult, rewriter.getContext()),
+  };
+  SmallVector<StringRef> iterators{"parallel", "parallel","reduction","reduction"};
+  //Block &payload = matmulOp.region().front();
+ SmallVector<Value> newOperands={inputLhs,inputRhs};
+auto newOp = rewriter.create<linalg::GenericOp>(
+        matmulOp.getLoc(), matmulOp->getResultTypes(), newOperands,matmulOp.getOutputOperand(0)->get(),
+        indexingMaps, iterators,/*bodyBuild=*/nullptr,PruneAttributeList(matmulOp));
+/*ArrayRef<StringRef> odsAttrs = matmulOp.getAttributeNames();
+for (NamedAttribute kv : matmulOp->getAttrs()) {
+  if (!llvm::is_contained(odsAttrs, kv.getName().getValue())) {
+        newOp->setAttr(kv.getName(), kv.getValue());
+  }
+}*/       
+rewriter.inlineRegionBefore(matmulOp.region(), newOp.region(),
+                                newOp.region().begin());
 
-  return MatmulOp.getResult(0);
+
+return newOp.getResult(0);
 };
 
 struct PackedBLinalgMatmulOp : public OpRewritePattern<linalg::MatmulOp> {
@@ -75,13 +124,14 @@ struct PackedBLinalgMatmulOp : public OpRewritePattern<linalg::MatmulOp> {
   LogicalResult matchAndRewrite(linalg::MatmulOp matmulOp,
                                 PatternRewriter &rewriter) const override {
     auto loc = matmulOp.getLoc();
-    auto lhs = matmulOp.getInputs()[0];
+    auto lhs = matmulOp.getInputOperand(0)->get();
+    lhs.dump();
     auto rhs = matmulOp.getInputs()[1];
     auto rhsType = rhs.getType().cast<RankedTensorType>();
     auto rhsShape = rhsType.getShape();
     auto lhsType = lhs.getType().cast<RankedTensorType>();
     auto lhsShape = lhsType.getShape();
-    SmallVector<AffineMap> newIndexingMaps;
+    //SmallVector<AffineMap> newIndexingMaps;
 
     RankedTensorType lhsReshapeType = RankedTensorType::get({lhsShape[0], lhsShape[1]/2,2}, lhsType.getElementType());
     //auto newRhs = rhs.reshape()
@@ -96,14 +146,14 @@ struct PackedBLinalgMatmulOp : public OpRewritePattern<linalg::MatmulOp> {
       ReassociationIndices{0,1}, ReassociationIndices{2}};
   Value newRhs = rewriter.create<tensor::ExpandShapeOp>(
       loc, rhsReshapeType, rhs, rhsExpandIndices);
-    newLhs.dump();
-    newRhs.dump();
+    //newLhs.dump();
+    //newRhs.dump();
   Value newTransposeRhs = transpose(loc,rewriter,newRhs, {0,2,1});
-   newTransposeRhs.dump();
+   //newTransposeRhs.dump();
   Value result = computeGeneric(loc,rewriter,newLhs,newTransposeRhs,matmulOp);
-   //rewriter.replaceOp(matmulOp, ArrayRef<Value>{result});
-   result.dump();
-    return failure();
+  rewriter.replaceOp(matmulOp, ArrayRef<Value>{result});
+   //result.dump();
+    return success();
   }
 };
 

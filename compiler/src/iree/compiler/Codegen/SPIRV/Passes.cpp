@@ -381,6 +381,7 @@ void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm) {
 
   nestedModulePM.addNestedPass<func::FuncOp>(
       createSPIRVMatchJointLoadPass());
+  addLoopMaterializationPasses(nestedModulePM);
   //nestedModulePM.addPass(createSPIRVVectorizeLoadStore());
   /*nestedModulePM.addNestedPass<func::FuncOp>(
       createGPUPipeliningPass(1));*/
