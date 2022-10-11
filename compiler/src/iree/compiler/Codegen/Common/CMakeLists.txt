@@ -158,6 +158,7 @@ iree_cc_library(
     "LinalgOpInfo.cpp"
     "MemrefCopyToLinalg.cpp"
     "PackedBLayout.cpp"
+    "MatmulPromoteAccumulation.cpp"
     "PadDynamicAlloc.cpp"
     "RemoveTrivialLoops.cpp"
     "TestPartitionableLoopsInterface.cpp"

@@ -328,7 +328,8 @@ void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm) {
   auto &nestedModulePM = pm.nest<ModuleOp>();
   nestedModulePM.addNestedPass<func::FuncOp>(
       createRemoveSingleIterationLoopPass());
-  // Distribute linalg onto threads within the workgroup.
+  
+  nestedModulePM.addNestedPass<func::FuncOp>(createMatmulPromoteAccumulationPass());
   nestedModulePM.addNestedPass<func::FuncOp>(createPackedBLayoutPass());
 
   addBufferizePasses(nestedModulePM, gpuAllocateWorkgroupMemoryFn);

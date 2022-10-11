@@ -106,7 +106,7 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
   // the tile sizes for each subgroup, considering the input workload size and
   // native joint matrix size choices.
   int subgroupSize = 8;//resourceLimits.getSubgroupSize();
-  std::array<int64_t, 3> workgroupSize = {2*subgroupSize, 2, 1};
+  std::array<int64_t, 3> workgroupSize = {subgroupSize, 1, 1};
 
   TileSizesListType tileSizes;
   // Again because we only consider whether the input workload is perfectly
@@ -115,10 +115,10 @@ static LogicalResult setOpConfig(const spirv::TargetEnv &targetEnv,
   // one.
   // Taking a different approach to tiling configuration
 
-  /*tileSizes.push_back({coopMatSize->m, coopMatSize->n, coopMatSize->k});
-  tileSizes.push_back({coopMatSize->m, coopMatSize->n, coopMatSize->k});*/
-  tileSizes.push_back({16, 16, 16});
-  tileSizes.push_back({8, 8, 16});
+  tileSizes.push_back({coopMatSize->m, coopMatSize->n, coopMatSize->k});
+  tileSizes.push_back({coopMatSize->m, coopMatSize->n, coopMatSize->k});
+  //tileSizes.push_back({16, 16, 16});
+  //tileSizes.push_back({8, 8, 16});
 
 
   return setOpConfigAndEntryPointFnTranslation(

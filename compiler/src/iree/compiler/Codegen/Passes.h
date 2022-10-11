@@ -130,6 +130,9 @@ std::unique_ptr<OperationPass<func::FuncOp>> createMemrefCopyToLinalgPass();
 /// Creates a pass to convert linalg.matmul to a PackedB layout.
 std::unique_ptr<OperationPass<func::FuncOp>> createPackedBLayoutPass();
 
+/// Creates a pass to convert f16 linalg.matmul to a f32 accumlation linalg matmul.
+std::unique_ptr<OperationPass<func::FuncOp>> createMatmulPromoteAccumulationPass();
+
 /// Convert GPU shared memory copies to distributed
 /// transfer_read/transfer_write.
 std::unique_ptr<OperationPass<func::FuncOp>>

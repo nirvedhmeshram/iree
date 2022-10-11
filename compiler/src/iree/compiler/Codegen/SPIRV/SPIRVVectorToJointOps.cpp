@@ -184,6 +184,11 @@ struct ConvertVectorTransferOp final
 }
 
     if (auto writeOp = dyn_cast<vector::TransferWriteOp>(*op)) {
+
+      auto contractOp = op.vector()
+                               .getDefiningOp<vector::ContractionOp>();
+      if(!contractOp)
+        return failure();
       vector::TransferWriteOp::Adaptor adaptor(operands,
                                                op->getAttrDictionary());
       Value bufferPtr = spirv::getOpenCLElementPtr(

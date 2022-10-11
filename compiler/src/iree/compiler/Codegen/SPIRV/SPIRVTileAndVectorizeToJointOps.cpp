@@ -160,7 +160,7 @@ void populateVectorizationPatterns(MLIRContext *context,
         genericOp.getReductionDims(redDims);
         return success(redDims.size()!=0);
         }).setMatchByDefault();
-  VectorizationPatterns<linalg::FillOp, linalg::GenericOp>::insert(patterns,
+  VectorizationPatterns</*linalg::FillOp,*/ linalg::GenericOp>::insert(patterns,
                                                                    opt, f);
   patterns.add<LinalgVectorizationPattern>(
       context, f.addOpFilter<linalg::ContractionOpInterface>(), opt);

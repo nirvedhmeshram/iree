@@ -161,9 +161,16 @@ def MemrefCopyToLinalgPass :
 
 def PackedBLayoutPass :
     Pass<"iree-codegen-packedB", "func::FuncOp"> {
-  let summary = "Convert memref.copy to linalg op";
+  let summary = "linalg matmul op packed B layout";
   let constructor =
       "mlir::iree_compiler::createPackedBLayoutPass()";
+}
+
+def MatmulPromoteAccumulationPass :
+    Pass<"iree-codegen-matmul-promote-acc", "func::FuncOp"> {
+  let summary = "f32 accumulation for f16 linalg matmul";
+  let constructor =
+      "mlir::iree_compiler::createMatmulPromoteAccumulationPass()";
 }
 
 def GPUDistributeSharedMemoryCopy :

@@ -43,6 +43,10 @@ class FoldExtIntoContract
     if(resultLayout==opLayout){
       return failure();
     }
+    // use former if not packing, later if packing
+     /* auto newJointMatrixType = spirv::JointMatrixINTELType::get(
+                jointMatrixType.getElementType(), spirv::Scope::Subgroup, jointMatrixType.getRows(),
+                jointMatrixType.getColumns(), opLayout);*/
       auto newJointMatrixType = spirv::JointMatrixINTELType::get(
                 jointMatrixType.getElementType(), spirv::Scope::Subgroup, jointMatrixType.getColumns(),
                 jointMatrixType.getRows(), opLayout);
