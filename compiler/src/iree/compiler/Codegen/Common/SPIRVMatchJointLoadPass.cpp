@@ -44,12 +44,12 @@ class FoldExtIntoContract
       return failure();
     }
     // use former if not packing, later if packing
-     /* auto newJointMatrixType = spirv::JointMatrixINTELType::get(
+     auto newJointMatrixType = spirv::JointMatrixINTELType::get(
                 jointMatrixType.getElementType(), spirv::Scope::Subgroup, jointMatrixType.getRows(),
-                jointMatrixType.getColumns(), opLayout);*/
-      auto newJointMatrixType = spirv::JointMatrixINTELType::get(
+                jointMatrixType.getColumns(), opLayout);
+      /*auto newJointMatrixType = spirv::JointMatrixINTELType::get(
                 jointMatrixType.getElementType(), spirv::Scope::Subgroup, jointMatrixType.getColumns(),
-                jointMatrixType.getRows(), opLayout);
+                jointMatrixType.getRows(), opLayout);*/
       rewriter.replaceOpWithNewOp<spirv::INTELJointMatrixLoadOp> (op,newJointMatrixType,
       op.getPointer(),op.getStride(), opLayout, spirv::Scope::Subgroup,
                 spirv::MemoryAccessAttr(),IntegerAttr());

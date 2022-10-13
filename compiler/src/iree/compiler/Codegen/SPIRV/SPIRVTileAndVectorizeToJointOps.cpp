@@ -151,7 +151,7 @@ void populateVectorizationPatterns(MLIRContext *context,
   linalg::LinalgVectorizationOptions opt;
   linalg::LinalgTransformationFilter f(
       StringAttr::get(context, getVectorizeMarker()));
-      f.addFilter([](Operation* op){
+      /*f.addFilter([](Operation* op){
         //return sucess only if has a reduction dimension
         if(!isa<linalg::GenericOp>(op))
           return success();
@@ -159,7 +159,7 @@ void populateVectorizationPatterns(MLIRContext *context,
         SmallVector<unsigned> redDims;
         genericOp.getReductionDims(redDims);
         return success(redDims.size()!=0);
-        }).setMatchByDefault();
+        }).setMatchByDefault();*/
   VectorizationPatterns</*linalg::FillOp,*/ linalg::GenericOp>::insert(patterns,
                                                                    opt, f);
   patterns.add<LinalgVectorizationPattern>(
@@ -323,7 +323,7 @@ class SPIRVTileAndVectorizeToJointOpsPass final
       return signalPassFailure();
     }
 
-    SmallVector<int64_t> jointOpSize = {8,8,8,2};//getTargetJointOpSize(rootOp);
+    SmallVector<int64_t> jointOpSize = {8,8,16};//getTargetJointOpSize(rootOp);
     SmallVector<int64_t> subgroupCounts = deduceSubgroupCounts(rootOp);
 
     // Then tile and distribute to subgroups.

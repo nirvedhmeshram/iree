@@ -363,7 +363,7 @@ struct LLVMGPUTileAndDistributePass
       RewritePatternSet promotionPatterns(&getContext());
       if(!clCodegenDisablePromotion){
       populatePromotionPatterns(context, promotionPatterns, contractOpFilter,
-                                {0});
+                                {0,1});
       }
 
       if (failed(applyPatternsAndFoldGreedily(funcOp,

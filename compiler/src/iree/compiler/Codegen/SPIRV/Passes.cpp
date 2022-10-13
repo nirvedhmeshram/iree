@@ -329,8 +329,8 @@ void addSPIRVTileAndVectorizeToJointOpsPassPipeline(OpPassManager &pm) {
   nestedModulePM.addNestedPass<func::FuncOp>(
       createRemoveSingleIterationLoopPass());
   
-  nestedModulePM.addNestedPass<func::FuncOp>(createMatmulPromoteAccumulationPass());
-  nestedModulePM.addNestedPass<func::FuncOp>(createPackedBLayoutPass());
+  //nestedModulePM.addNestedPass<func::FuncOp>(createMatmulPromoteAccumulationPass());
+  //nestedModulePM.addNestedPass<func::FuncOp>(createPackedBLayoutPass());
 
   addBufferizePasses(nestedModulePM, gpuAllocateWorkgroupMemoryFn);
 
