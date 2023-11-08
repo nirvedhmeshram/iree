@@ -25,15 +25,15 @@ iree_cc_library(
     "api.h"
     "xrt_driver.c"
   INCLUDES
-    # "${XRT_INCLUDE_DIRS}"
+    "${XRT_INCLUDE_DIRS}"
   DEPS
     iree::base
     iree::base::core_headers
     iree::hal
     # TODO (nirvedhmeshram) : Figure out the flatbuffer format for this runtime
     # iree::schemas::xrt_executable_def_c_fbs
-    # ${xrt_core_LIBRARY}
-    # ${xrt_coreutil_LIBRARY}
-    # ${xrt_xilinxopencl_LIBRARY}
+    ${xrt_core_LIBRARY}
+    ${xrt_coreutil_LIBRARY}
+    ${xrt_xilinxopencl_LIBRARY}
   PUBLIC
 )

@@ -377,11 +377,11 @@ set(IREE_EXTERNAL_WEBGPU_HAL_DRIVER_REGISTER "iree_hal_webgpu_driver_module_regi
 # Enable with: -DIREE_EXTERNAL_HAL_DRIVERS=xrt
 #-------------------------------------------------------------------------------
 
-# find_package(XRT REQUIRED)
+find_package(XRT REQUIRED)
 
-# set(xrt_core_LIBRARY XRT::xrt_core)
-# set(xrt_coreutil_LIBRARY XRT::xrt_coreutil)
-# set(xrt_xilinxopencl_LIBRARY XRT::xilinxopencl)
+set(xrt_core_LIBRARY XRT::xrt_core)
+set(xrt_coreutil_LIBRARY XRT::xrt_coreutil)
+set(xrt_xilinxopencl_LIBRARY XRT::xilinxopencl)
 
 set(IREE_EXTERNAL_XRT_HAL_DRIVER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/experimental/xrt")
 set(IREE_EXTERNAL_XRT_HAL_DRIVER_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/experimental/xrt")
