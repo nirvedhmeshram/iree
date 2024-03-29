@@ -373,7 +373,6 @@ iree_check_single_backend_test_suite(
     "cuda"
   COMPILER_FLAGS
     "--iree-stream-emulate-memset"
-    "--iree-hal-cuda-enable-legacy-sync=false"
   INPUT_TYPE
     "stablehlo"
   RUNNER_ARGS
@@ -455,8 +454,6 @@ iree_check_single_backend_test_suite(
     "cuda"
   DRIVER
     "cuda"
-  COMPILER_FLAGS
-    "--iree-hal-cuda-enable-legacy-sync=false"
   INPUT_TYPE
     "stablehlo"
   RUNNER_ARGS
@@ -535,7 +532,7 @@ iree_check_single_backend_test_suite(
     "transpose.mlir"
     # "while.mlir"  # TODO(#12509): WebGPU SPIR-V broken
   TARGET_BACKEND
-    "webgpu"
+    "webgpu-spirv"
   # Only test compilation for now, the WebGPU driver is not stable/tested yet.
   # DRIVER
   #   "webgpu"
@@ -689,3 +686,95 @@ iree_check_single_backend_test_suite(
   COMPILER_FLAGS
     "--iree-input-type=stablehlo"
 )
+
+if(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx")
+
+unset(IREE_HIP_TEST_COMPILER_FLAGS)
+list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
+  "--iree-rocm-target-chip=${IREE_HIP_TEST_TARGET_CHIP}"
+)
+
+iree_check_single_backend_test_suite(
+  NAME
+    check_hip_stream
+  SRCS
+    "abs.mlir"
+    "add.mlir"
+    "batch_norm_inference.mlir"
+    "bitcast_convert.mlir"
+    "broadcast.mlir"
+    "broadcast_add.mlir"
+    "broadcast_in_dim.mlir"
+    "clamp.mlir"
+    "compare.mlir"
+    "complex.mlir"
+    "concatenate.mlir"
+    "constant.mlir"
+    "convert.mlir"
+    "convolution.mlir"
+    "cosine.mlir"
+    "divide.mlir"
+    "dot.mlir"
+    "dot_bf16.mlir"
+    "dot_general.mlir"
+    "dynamic_slice.mlir"
+    "dynamic_update_slice.mlir"
+    "exponential.mlir"
+    "exponential_fp16.mlir"
+    "exponential_minus_one.mlir"
+    "fft.mlir"
+    "finite.mlir"
+    "floor.mlir"
+    "gather.mlir"
+    "householder.mlir"
+    "iota.mlir"
+    "log.mlir"
+    "log_plus_one.mlir"
+    "maximum.mlir"
+    "minimum.mlir"
+    "multiply.mlir"
+    "negate.mlir"
+    "pad.mlir"
+    "philox.mlir"
+    "pow.mlir"
+    "reduce.mlir"
+    "reduce_window.mlir"
+    "remainder.mlir"
+    "reshape.mlir"
+    "reverse.mlir"
+    "rng_normal.mlir"
+    "rng_uniform.mlir"
+    "round.mlir"
+    "rsqrt.mlir"
+    "scatter.mlir"
+    "scatter_dynamic.mlir"
+    "select.mlir"
+    "sine.mlir"
+    "slice.mlir"
+    "sort.mlir"
+    "sqrt.mlir"
+    "subtract.mlir"
+    "tanh.mlir"
+    "three_fry.mlir"
+    "torch_index_select.mlir"
+    "transpose.mlir"
+    "while.mlir"
+  TARGET_BACKEND
+    "rocm"
+  DRIVER
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  INPUT_TYPE
+    "stablehlo"
+  RUNNER_ARGS
+    "--hip_use_streams=true"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-amd"
+)
+
+endif(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx")

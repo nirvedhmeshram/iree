@@ -10,23 +10,26 @@
 #include <numeric>
 #include <optional>
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Codegen/Common/GPU/GPUHeuristics.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "iree/compiler/Codegen/Interfaces/UKernelOpInterface.h"
 #include "iree/compiler/Codegen/TransformStrategies/GPU/Strategies.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
-#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
+#include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Debug.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
@@ -54,10 +57,20 @@ llvm::cl::opt<bool>
                     llvm::cl::desc("force use mma sync instead of wmma ops"),
                     llvm::cl::init(false));
 
+llvm::cl::opt<int> clGPUMatmulCThreshold(
+    "iree-codegen-llvmgpu-matmul-c-matrix-threshold",
+    llvm::cl::desc("matmul c matrix element count threshold to be considered "
+                   "as small vs. large when deciding MMA schedule"),
+    // TODO: We should get this value from the target's parallelism.
+    llvm::cl::init(512 * 512));
+
 namespace {
 
 constexpr StringLiteral kCudaTarget = "cuda";
 constexpr StringLiteral kRocmTarget = "rocm";
+
+// Threshold used to determine whether a matmul dimension is 'very skinny'.
+constexpr int64_t kVerySkinnyDimThreshold = 4;
 
 /// Structure to represent target features.
 struct TargetInfo {
@@ -81,21 +94,35 @@ constexpr unsigned softwarePipelineDepthSimt = 0;
 
 } // namespace
 
+//====---------------------------------------------------------------------===//
+// Matmul Configuration Helpers
+//====---------------------------------------------------------------------===//
+
 /// Return the best combination of tile size and wg size. It will then used to
 /// pick the best size aligned with the shape dimension.
-static void getMatmulConfig(SmallVectorImpl<TileWorkgroupSizePair> &tileSizes) {
+static SmallVector<TileWorkgroupSizePair>
+getMatmulConfig(const TargetInfo &targetInfo) {
+  SmallVector<TileWorkgroupSizePair> tileSizes;
   // Pick tile size so that M*K and K*N dividible by wgSize * \*vecSize=*\4.
   // This way workgroup memory copy don't need to be masked. Once we support
   // masked load we can get performance out of more configuration.
-  tileSizes.push_back(TileWorkgroupSizePair({{32, 128, 32}, {32, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{128, 64, 8}, {16, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{16, 256, 32}, {64, 2, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{8, 32, 32}, {8, 8, 1}, 1}));
 
-  tileSizes.push_back(TileWorkgroupSizePair({{32, 128, 4}, {32, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{8, 128, 4}, {32, 1, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{16, 64, 4}, {16, 2, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{1, 128, 8}, {32, 1, 1}, 1}));
+  // Make use of the full subgroup when possible.
+  if (targetInfo.supportedSubgroupSizes.front() == 64) {
+    tileSizes.push_back(TileWorkgroupSizePair({{64, 128, 64}, {64, 16, 1}, 1}));
+  }
+
+  llvm::append_values(tileSizes,
+                      TileWorkgroupSizePair({{32, 128, 32}, {32, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{128, 64, 8}, {16, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{16, 256, 32}, {64, 2, 1}, 1}),
+                      TileWorkgroupSizePair({{8, 32, 32}, {8, 8, 1}, 1}),
+
+                      TileWorkgroupSizePair({{32, 128, 4}, {32, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{8, 128, 4}, {32, 1, 1}, 1}),
+                      TileWorkgroupSizePair({{16, 64, 4}, {16, 2, 1}, 1}),
+                      TileWorkgroupSizePair({{1, 128, 8}, {32, 1, 1}, 1}));
+  return tileSizes;
 }
 
 /// Return the best combination of tile size and wg size when using tensorcore
@@ -283,101 +310,323 @@ getTensorCorePipeline(Type elementType) {
   return codegenPipeline;
 }
 
+//====---------------------------------------------------------------------===//
+// Vector Distribution Contraction/Convolution Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 static LogicalResult
-setVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
-                            linalg::LinalgOp op, const TargetInfo &targetInfo) {
-  if (!linalg::isaContractionOpInterface(op) || op.getNumParallelLoops() < 2) {
+setConvolutionVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                                       linalg::LinalgOp op,
+                                       const TargetInfo &targetInfo) {
+  FailureOr<ArrayAttr> mmaKinds = getSupportedMmaTypes(entryPoint);
+  if (failed(mmaKinds)) {
     return failure();
   }
 
-  FailureOr<ArrayAttr> maybeMmaTypes = getSupportedMmaTypes(entryPoint);
-  if (failed(maybeMmaTypes)) {
-    return failure();
-  }
-
-  // Currently only applies when there is a supported mma operation we can map
-  // to.
-  // TODO: Reuse this pipeline for SIMT based flows.
-  std::optional<IREE::GPU::MmaAttr> maybeMmaAttr =
-      getCompatibleMmaAttr(*maybeMmaTypes, op);
-  if (!maybeMmaAttr) {
-    return failure();
-  }
-  IREE::GPU::MmaAttr mmaAttr = *maybeMmaAttr;
-
-  // This pipeline needs to know the subgroup size to know how to distribute to
-  // virtual lane ids.
+  // This pipeline needs to know the subgroup size for distributing to virtual
+  // lane IDs.
   if (targetInfo.supportedSubgroupSizes.empty()) {
     return failure();
   }
+  const int64_t subgroupSize = targetInfo.supportedSubgroupSizes.front();
 
-  int64_t numLoops = op.getNumLoops();
+  SmallVector<int64_t, 4> bounds = op.getStaticLoopRanges();
+  FailureOr<mlir::linalg::ConvolutionDimensions> convolutionDims =
+      mlir::linalg::inferConvolutionDims(op);
+  if (failed(convolutionDims)) {
+    return failure();
+  }
 
-  SmallVector<int64_t> workgroupTileSizes(numLoops, 0);
+  // This strategy turns non-strided/dilated convolution problems into matmul
+  // problems by tiling certain dimensions to 1:
+  //  - Batch dimensions (parallel shared by the image and output)
+  //  - Filter dimensions (reduction on the filter, and convolved on the image)
+  //  - All output image dimensions except the outermost one
+  //
+  // After this, the remaining non-unit dimensions are:
+  //  - One output image dimension corresponding to the M dimension of a matmul.
+  //  - The output channel dimension, corresponding to the N dimension.
+  //  - The input channel dimension, corresponding to the K dimension.
 
-  // Arbitrary starter heuristics.
-  int64_t maxMSize = 128;
-  int64_t maxNSize = 128;
-  int64_t maxKSize = 32;
+  // TODO: Relax this condition to strictly alignment requirements.
+  if (convolutionDims->outputChannel.size() < 1 ||
+      convolutionDims->inputChannel.size() < 1 ||
+      convolutionDims->filterLoop.size() < 1 ||
+      convolutionDims->outputImage.size() < 1 ||
+      convolutionDims->depth.size() != 0) {
+    return failure();
+  }
+
+  auto isAllOnesList = [](ArrayRef<int64_t> list) {
+    return llvm::all_of(list, [](int64_t i) { return i == 1; });
+  };
+
+  // TODO: Support non-unit strides/dilations.
+  if (!isAllOnesList(convolutionDims->strides) ||
+      !isAllOnesList(convolutionDims->dilations)) {
+    return failure();
+  }
+
+  int64_t mDim = convolutionDims->outputImage.back();
+  int64_t nDim = convolutionDims->outputChannel.back();
+  // TODO: Support NCHW convolutions. This is just a matmul_transpose_a, however
+  // the distribution patterns currently do not support that variant.
+  if (mDim > nDim) {
+    return failure();
+  }
+  int64_t kDim = convolutionDims->inputChannel.back();
+
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value init = op.getDpsInitOperand(0)->get();
+
+  Type lhsElemType = getElementTypeOrSelf(lhs);
+  Type rhsElemType = getElementTypeOrSelf(rhs);
+  Type initElemType = getElementTypeOrSelf(init);
+
+  GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
+                             lhsElemType,  rhsElemType,  initElemType};
+
+  auto mmaAttrs = llvm::to_vector(mmaKinds->getAsRange<IREE::GPU::MmaAttr>());
+  SmallVector<GPUMatmulShapeType> intrinsics;
+  intrinsics.reserve(mmaKinds->size());
+  for (auto mma : mmaAttrs) {
+    auto [mSize, nSize, kSize] = mma.getMNKShape();
+    auto [aType, bType, cType] = mma.getABCElementTypes();
+    intrinsics.emplace_back(mSize, nSize, kSize, aType, bType, cType);
+  }
+
+  // Note that the following heuristic seeds are just placeholder values.
+  // We need to clean it up and make it adjusting to different targets.
+  // See https://github.com/openxla/iree/issues/16341 for details.
+  GPUMMAHeuristicSeeds seeds{/*bestSubgroupCountPerWorkgroup=*/4,
+                             /*bestMNTileCountPerSubgroup=*/8,
+                             /*bestKTileCountPerSubgroup=*/2};
+
+  // First try to find a schedule with an exactly matching intrinsic.
+  std::optional<GPUMMASchedule> schedule =
+      deduceMMASchedule(problem, intrinsics, seeds);
+  if (!schedule) {
+    // Then try again by allowing upcasting accumulator.
+    schedule =
+        deduceMMASchedule(problem, intrinsics, seeds, /*canUpcastAcc=*/true);
+  }
+  if (!schedule) {
+    return failure();
+  }
+
+  std::array<int64_t, 3> workgroupSize{schedule->nWarpCount * subgroupSize,
+                                       schedule->mWarpCount, 1};
+
+  SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
+  // Tile all batch dimensions with unit size.
+  for (int64_t batch : convolutionDims->batch) {
+    workgroupTileSizes[batch] = 1;
+  }
+  // Tile all output image dimensions with unit size except the last one.
+  for (int64_t oi : llvm::drop_end(convolutionDims->outputImage)) {
+    workgroupTileSizes[oi] = 1;
+  }
+  for (int64_t oc : llvm::drop_end(convolutionDims->outputChannel)) {
+    workgroupTileSizes[oc] = 1;
+  }
+  for (int64_t ic : llvm::drop_end(convolutionDims->inputChannel)) {
+    workgroupTileSizes[ic] = 1;
+  }
+  // Compute the M/N dimension tile size by multiply subgroup information.
+  workgroupTileSizes[mDim] =
+      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+  workgroupTileSizes[nDim] =
+      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+
+  // Follow the LLVMGPU convention of keeping all of the tile sizes in one list.
+  workgroupTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
+
+  // Tile all filter loop dimensions to 1.
+  for (int64_t filterDim : convolutionDims->filterLoop) {
+    workgroupTileSizes[filterDim] = 1;
+  }
+
+  TileSizesListType tileSizes;
+  tileSizes.push_back(workgroupTileSizes);
+
+  // Attach the MMA schedule as an attribute to the entry point export function
+  // for later access in the pipeline.
+  MLIRContext *context = op.getContext();
+  auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
+      context, mmaAttrs[schedule->index], schedule->mWarpCount,
+      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
+      schedule->kTileCount);
+  SmallVector<NamedAttribute, 1> attrs;
+  attrs.emplace_back(
+      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
+      scheduleAttr);
+  auto configDict = DictionaryAttr::get(context, attrs);
+
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, op, tileSizes,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute,
+      workgroupSize, subgroupSize, configDict);
+}
+
+static LogicalResult
+setMatmulVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                                  linalg::LinalgOp op,
+                                  const TargetInfo &targetInfo) {
+  FailureOr<ArrayAttr> mmaKinds = getSupportedMmaTypes(entryPoint);
+  if (failed(mmaKinds)) {
+    return failure();
+  }
+
+  // This pipeline needs to know the subgroup size for distributing to virtual
+  // lane IDs.
+  if (targetInfo.supportedSubgroupSizes.empty()) {
+    return failure();
+  }
+  const int64_t subgroupSize = targetInfo.supportedSubgroupSizes.front();
 
   SmallVector<int64_t, 4> bounds = op.getStaticLoopRanges();
   FailureOr<mlir::linalg::ContractionDimensions> contractionDims =
       mlir::linalg::inferContractionDims(op);
   assert(succeeded(contractionDims) && "Could not infer contraction dims");
 
-  int64_t mDim = contractionDims->m[0];
-  int64_t nDim = contractionDims->n[0];
-  int64_t kDim = contractionDims->k[0];
+  if (contractionDims->k.size() < 1 || contractionDims->m.size() < 1 ||
+      contractionDims->n.size() < 1) {
+    return failure();
+  }
 
-  int64_t problemMSize = bounds[mDim];
-  int64_t problemNSize = bounds[nDim];
-  int64_t problemKSize = bounds[kDim];
+  // For now we are not being smart and trying to reshape dimensions to allow
+  // for better usage of intrinsics, and instead are tiling all dimensions
+  // except the inner most m, n, and k dimensions to 1.
+  int64_t mDim = contractionDims->m.back();
+  int64_t nDim = contractionDims->n.back();
 
-  auto getTileSize = [](int64_t problemSize, int64_t maxSize) {
-    int64_t tileSize = maxSize;
-    // The static verification that the linalg op is statically aligned to the
-    // particular mma type guarantees that this will be at least the minimum
-    // tile size.
-    // TODO: Allow unaligned and dynamic cases once masking is supported by
-    // distribution.
-    while (problemSize % tileSize != 0)
-      tileSize /= 2;
-    return tileSize;
-  };
+  // Bail out on matvec-like cases.
+  if (bounds[mDim] == 1 || bounds[nDim] == 1) {
+    return failure();
+  }
 
-  int64_t mTile = getTileSize(problemMSize, maxMSize);
-  int64_t nTile = getTileSize(problemNSize, maxNSize);
-  int64_t kTile = getTileSize(problemKSize, maxKSize);
+  int64_t kDim = contractionDims->k.back();
 
-  // Get the shape of the [warp-synchronous] mma operation.
-  auto [minMSize, minNSize, minKSize] = mmaAttr.getMNKShape();
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value init = op.getDpsInitOperand(0)->get();
 
-  // HACK: This is a single workgroup...
-  mTile = std::min(mTile, minMSize);
-  nTile = std::min(nTile, minNSize);
+  Type lhsElemType = getElementTypeOrSelf(lhs);
+  Type rhsElemType = getElementTypeOrSelf(rhs);
+  Type initElemType = getElementTypeOrSelf(init);
 
-  // Following the LLVMGPU convention of keeping all of the tile sizes in one
-  // list.
-  workgroupTileSizes[mDim] = mTile;
-  workgroupTileSizes[nDim] = nTile;
-  workgroupTileSizes[kDim] = kTile;
+  GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
+                             lhsElemType,  rhsElemType,  initElemType};
+
+  auto mmaAttrs = llvm::to_vector(mmaKinds->getAsRange<IREE::GPU::MmaAttr>());
+  SmallVector<GPUMatmulShapeType> intrinsics;
+  intrinsics.reserve(mmaKinds->size());
+  for (auto mma : mmaAttrs) {
+    auto [mSize, nSize, kSize] = mma.getMNKShape();
+    auto [aType, bType, cType] = mma.getABCElementTypes();
+    intrinsics.emplace_back(mSize, nSize, kSize, aType, bType, cType);
+  }
+
+  GPUMMAHeuristicSeeds seeds;
+
+  // Note that the following heuristic seeds are just placeholder values.
+  // We need to clean it up and make it adjusting to different targets.
+  // See https://github.com/openxla/iree/issues/16341 for details.
+  if (problem.mSize * problem.nSize <= clGPUMatmulCThreshold) {
+    // For matmuls with small M*N size, we want to distribute M*N onto more
+    // workgroups to fill the GPU. Use a smaller bestMNTileCountPerSubgroup
+    // and a larger bestKTileCountPerSubgroup.
+    seeds = {/*bestSubgroupCountPerWorkgroup=*/4,
+             /*bestMNTileCountPerSubgroup=*/4,
+             /*bestKTileCountPerSubgroup=*/8};
+  } else {
+    seeds = {/*bestSubgroupCountPerWorkgroup=*/4,
+             /*bestMNTileCountPerSubgroup=*/8,
+             /*bestKTileCountPerSubgroup=*/4};
+  }
+
+  // First try to find a schedule with an exactly matching intrinsic.
+  std::optional<GPUMMASchedule> schedule =
+      deduceMMASchedule(problem, intrinsics, seeds);
+  if (!schedule) {
+    // Then try again by allowing upcasting accumulator.
+    schedule =
+        deduceMMASchedule(problem, intrinsics, seeds, /*canUpcastAcc=*/true);
+  }
+  if (!schedule) {
+    return failure();
+  }
+
+  std::array<int64_t, 3> workgroupSize{schedule->nWarpCount * subgroupSize,
+                                       schedule->mWarpCount, 1};
+
+  SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
+  // Tile all batch dimensions with unit size.
+  for (int64_t batch : contractionDims->batch) {
+    workgroupTileSizes[batch] = 1;
+  }
+
+  // Tile all m, n, and k dimensions to 1 except the innermost. Unit dims
+  // from this tiling are folded before vectorization.
+  for (int64_t m : llvm::drop_end(contractionDims->m)) {
+    workgroupTileSizes[m] = 1;
+  }
+  for (int64_t n : llvm::drop_end(contractionDims->n)) {
+    workgroupTileSizes[n] = 1;
+  }
+  for (int64_t k : llvm::drop_end(contractionDims->k)) {
+    workgroupTileSizes[k] = 1;
+  }
+
+  // Compute the M/N dimension tile size by multiply subgroup information.
+  workgroupTileSizes[mDim] =
+      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+  workgroupTileSizes[nDim] =
+      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+
+  // Follow the LLVMGPU convention of keeping all of the tile sizes in one list.
+  workgroupTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
 
   TileSizesListType tileSizes;
-  // HACK: need proper heuristics for workgroup size, but for now the pipeline
-  // is single subgroup.
   tileSizes.push_back(workgroupTileSizes);
-  SmallVector<int64_t, 3> workgroupSize(3, 1); // (X, Y, Z)
 
-  int64_t subgroupSize = targetInfo.supportedSubgroupSizes.front();
-  workgroupSize[0] = subgroupSize;
+  // Attach the MMA schedule as an attribute to the entry point export function
+  // for later access in the pipeline.
+  MLIRContext *context = op.getContext();
+  auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
+      context, mmaAttrs[schedule->index], schedule->mWarpCount,
+      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
+      schedule->kTileCount);
+  SmallVector<NamedAttribute, 1> attrs;
+  attrs.emplace_back(
+      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
+      scheduleAttr);
+  auto configDict = DictionaryAttr::get(context, attrs);
 
   return setOpConfigAndEntryPointFnTranslation(
       entryPoint, op, tileSizes,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute,
-      workgroupSize, /*subgroupSize=*/subgroupSize);
-
-  return success();
+      workgroupSize, subgroupSize, configDict);
 }
+
+static LogicalResult
+setVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                            linalg::LinalgOp linalgOp,
+                            const TargetInfo &targetInfo) {
+  if (linalg::isaContractionOpInterface(linalgOp)) {
+    return setMatmulVectorDistributionConfig(entryPoint, linalgOp, targetInfo);
+  }
+  if (linalg::isaConvolutionOpInterface(linalgOp)) {
+    return setConvolutionVectorDistributionConfig(entryPoint, linalgOp,
+                                                  targetInfo);
+  }
+  return failure();
+}
+
+//====---------------------------------------------------------------------===//
+// Contraction Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
                                        linalg::LinalgOp op,
@@ -410,6 +659,24 @@ static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
   if (llvm::any_of(op.getIndexingMapsArray(),
                    [](AffineMap m) { return m.isPermutation(); })) {
     return failure();
+  }
+
+  // Send very skinny, {2-4}xNxK and Mx{2-4}xK, matmuls to the vector reduction
+  // pipeline, similar to matvec. Note: Because of reassociation in the vector
+  // reduction pipeline, this may lead to precission loss. If this ever becomes
+  // an issue, we can hide this behind a flag.
+  if (llvm::all_equal({contractionDims->m.size(), contractionDims->n.size(),
+                       contractionDims->k.size(), size_t{1}}) &&
+      contractionDims->batch.empty()) {
+    int64_t mSize = bounds[contractionDims->m.front()];
+    int64_t nSize = bounds[contractionDims->n.front()];
+    int64_t preferredSubgroupSize = targetInfo.supportedSubgroupSizes.front();
+    if ((mSize <= kVerySkinnyDimThreshold &&
+         (nSize > preferredSubgroupSize || ShapedType::isDynamic(nSize))) ||
+        (nSize <= kVerySkinnyDimThreshold &&
+         (mSize > preferredSubgroupSize || ShapedType::isDynamic(mSize)))) {
+      return failure();
+    }
   }
 
   // TODO: Properly rematerialize leading elementwise with shared memory
@@ -525,10 +792,10 @@ static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
           softwarePipelineDepthSimt,
           IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt);
     }
-    // simt matmul case
-    SmallVector<TileWorkgroupSizePair> tileSizeConfig;
-    // Query the best configuration.
-    getMatmulConfig(tileSizeConfig);
+
+    // SIMT matmul case. Query the best configuration.
+    SmallVector<TileWorkgroupSizePair> tileSizeConfig =
+        getMatmulConfig(targetInfo);
     // Pick the best configuration where the original shape is aligned on the
     // tile size.
     for (TileWorkgroupSizePair &config : tileSizeConfig) {
@@ -544,9 +811,8 @@ static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
   }
   // If we haven't found any config, use the best tile size hoping that
   // the workgroup specialization handles the main tile path efficiently.
-  SmallVector<TileWorkgroupSizePair> tileSizeConfig;
-  // Query the best configuration.
-  getMatmulConfig(tileSizeConfig);
+  SmallVector<TileWorkgroupSizePair> tileSizeConfig =
+      getMatmulConfig(targetInfo);
   constexpr size_t configIndex = 0;
   const TileWorkgroupSizePair &config = tileSizeConfig[configIndex];
   const int64_t tileX = config.tileSize[0];
@@ -567,6 +833,10 @@ static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
       softwarePipelineDepthSimt,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt);
 }
+
+//====---------------------------------------------------------------------===//
+// FFT Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 static LogicalResult setFftConfig(mlir::FunctionOpInterface entryPoint,
                                   IREE::LinalgExt::FftOp op,
@@ -599,6 +869,10 @@ static LogicalResult setFftConfig(mlir::FunctionOpInterface entryPoint,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUDistribute,
       workgroupSize);
 }
+
+//====---------------------------------------------------------------------===//
+// Sort Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 static LogicalResult setSortConfig(mlir::FunctionOpInterface entryPoint,
                                    Operation *op,
@@ -641,6 +915,10 @@ static LogicalResult setSortConfig(mlir::FunctionOpInterface entryPoint,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUDistribute,
       workgroupSize);
 }
+
+//====---------------------------------------------------------------------===//
+// Pack/Unpack Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 static SmallVector<int64_t>
 getDefaultWorkgroupTileSizesForPackUnPack(TilingInterface op,
@@ -687,6 +965,10 @@ static LogicalResult setPackConfig(mlir::FunctionOpInterface entryPoint,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUPackUnPack,
       workgroupSizes);
 }
+
+//====---------------------------------------------------------------------===//
+// Default Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 // Basic default properties for linalg ops that haven't been tuned.
 static LogicalResult setRootDefaultConfig(mlir::FunctionOpInterface entryPoint,
@@ -820,6 +1102,10 @@ static LogicalResult setRootDefaultConfig(mlir::FunctionOpInterface entryPoint,
       targetInfo.supportedSubgroupSizes.front());
 }
 
+//====---------------------------------------------------------------------===//
+// Transform Dialect Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 /// Set configuration for transform dialect based strategies.
 static LogicalResult
 setTransformDialectConfig(mlir::FunctionOpInterface entryPoint, Operation *op,
@@ -898,6 +1184,10 @@ static bool isMatvecLike(linalg::LinalgOp linalgOp) {
 
   return true;
 }
+
+//====---------------------------------------------------------------------===//
+// Warp Reduction Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 /// Set the configuration for reductions that can be mapped to warp reductions.
 static LogicalResult
@@ -1112,6 +1402,10 @@ static bool hasTwoOrThreeLoopsInfo(linalg::LinalgOp linalgOp) {
          linalgOp.getNumParallelLoops() <= 3;
 }
 
+//====---------------------------------------------------------------------===//
+// Transpose Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 static LogicalResult setTransposeConfig(mlir::FunctionOpInterface entryPoint,
                                         linalg::LinalgOp linalgOp) {
   LinalgOpInfo opInfo(linalgOp, sharedMemTransposeFilter);
@@ -1166,6 +1460,10 @@ static LogicalResult setTransposeConfig(mlir::FunctionOpInterface entryPoint,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTransposeSharedMem,
       workgroupSize);
 }
+
+//====---------------------------------------------------------------------===//
+// UKernel Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 /// Set the configuration for argmax that can be mapped to argmax uKernel.
 /// Distribute all parallel dim across different workgroups, and only use single
@@ -1323,6 +1621,10 @@ static bool distributeToSquare(const int64_t oh, const int64_t ow,
   return false;
 }
 
+//====---------------------------------------------------------------------===//
+// Convolution Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 static LogicalResult setConvolutionConfig(linalg::LinalgOp linalgOp,
                                           const int64_t subgroupSize,
                                           const int64_t bestTilingFactor) {
@@ -1416,6 +1718,10 @@ static LogicalResult setConvolutionConfig(linalg::LinalgOp linalgOp,
                                                pipeline, workgroupSize);
 }
 
+//====---------------------------------------------------------------------===//
+// Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
                                    Operation *computeOp) {
   TargetInfo targetInfo = getTargetInfo(entryPointFn);
@@ -1484,6 +1790,10 @@ static void propagateLoweringConfig(Operation *rootOperation,
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Entry Point
+//===----------------------------------------------------------------------===//
+
 LogicalResult initGPULaunchConfig(ModuleOp moduleOp) {
   llvm::StringMap<IREE::HAL::ExecutableExportOp> exportOps =
       getAllEntryPoints(moduleOp);
@@ -1492,6 +1802,31 @@ LogicalResult initGPULaunchConfig(ModuleOp moduleOp) {
     auto exportOp = exportOps.lookup(funcOp.getName());
     if (!exportOp)
       continue;
+
+    if (!getTranslationInfo(funcOp)) {
+      // If no translation info set, first check whether we already have
+      // workgroup count set--it's a "contract" to indicate that we should
+      // bypass all tiling and distribution to go down just the most basic
+      // lowering flow.
+      if (Block *body = exportOp.getWorkgroupCountBody()) {
+        auto retOp = cast<IREE::HAL::ReturnOp>(body->getTerminator());
+        // For scalar dispatch cases--using just one thread of one workgroup.
+        auto isOne = [](Value value) { return matchPattern(value, m_One()); };
+        if (llvm::all_of(retOp.getOperands(), isOne)) {
+          std::array<int64_t, 3> workgroupSize = {1, 1, 1};
+          if (failed(setDispatchConfig(funcOp, workgroupSize, std::nullopt)))
+            return failure();
+          auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+              funcOp.getContext(),
+              IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUBaseLowering);
+          if (failed(setTranslationInfo(funcOp, translationInfo))) {
+            return failure();
+          }
+          continue;
+        }
+      }
+    }
+
     SmallVector<Operation *> computeOps = getComputeOps(funcOp);
     if (getTranslationInfo(exportOp)) {
       // Currently LLVMGPU requires propagation of user lowering configs.

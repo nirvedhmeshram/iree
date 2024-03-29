@@ -7,8 +7,8 @@
 #ifndef IREE_COMPILER_SRC_IREE_COMPILER_CODEGEN_COMMON_ENCODINGUTILS_H_
 #define IREE_COMPILER_SRC_IREE_COMPILER_CODEGEN_COMMON_ENCODINGUTILS_H_
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -76,15 +76,6 @@ protected:
 /// Returns the encoding attribute from the type if there is an encoding.
 /// Otherwise, returns null.
 IREE::LinalgExt::EncodingAttr getEncodingAttr(RankedTensorType type);
-
-/// Get the permutation that permutes the input shape to the canonical
-/// matmul input shape based on the IndexingMaps encoding attribute.
-std::optional<SmallVector<int64_t>>
-getPermutationToCanonicalMatmulShape(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns a RankedTensorType that has been transposed into the canonical
-/// form for an ordinary matmul/batch_matmul op.
-RankedTensorType getCanonicalMatmulTypeWithEncoding(RankedTensorType type);
 
 /// Returns the ContractionDimensions for the encoding user_indexing_maps.
 FailureOr<linalg::ContractionDimensions>

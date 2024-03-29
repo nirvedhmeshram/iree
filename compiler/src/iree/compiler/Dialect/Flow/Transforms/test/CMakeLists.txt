@@ -16,6 +16,7 @@ iree_lit_test_suite(
   SRCS
     "annotate_dispatches.mlir"
     "capture_dispatch_dynamic_dims.mlir"
+    "capture_scf_for_dynamic_dims.mlir"
     "cleanup_tensor_shapes.mlir"
     "clone_producers_into_dispatch_regions.mlir"
     "collapse_dimensions.mlir"
@@ -35,6 +36,7 @@ iree_lit_test_suite(
     "fusion_of_tensor_ops.mlir"
     "initialize_empty_tensors.mlir"
     "inject_dispatch_tracing.mlir"
+    "inject_tensor_tracing.mlir"
     "insert_dispatch_debug_targets.mlir"
     "interchange_generic_ops.mlir"
     "interchange_transpose_generic_ops.mlir"
@@ -43,6 +45,7 @@ iree_lit_test_suite(
     "pad_fusion_with_consumer.mlir"
     "pad_fusion_with_producer.mlir"
     "pipeline_tests.mlir"
+    "split_reduction.mlir"
     "tensor_pad_to_tensor_insert_slice.mlir"
     "top_level_scf_to_cfg.mlir"
     "transform_dispatch_region_formation.mlir"

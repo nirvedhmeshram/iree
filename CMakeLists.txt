@@ -60,6 +60,12 @@ set(IREE_TRACING_PROVIDER_H "" CACHE STRING "Header file for custom tracing prov
 set(IREE_TRACING_MODE_DEFAULT "2" CACHE STRING "Default tracing feature/verbosity mode. See iree/base/tracing.h for more.")
 set(IREE_TRACING_MODE ${IREE_TRACING_MODE_DEFAULT} CACHE STRING "Tracing feature/verbosity mode. See iree/base/tracing.h for more.")
 
+if(IREE_ENABLE_COMPILER_TRACING AND NOT IREE_ENABLE_RUNTIME_TRACING)
+  message(SEND_ERROR
+      "IREE_ENABLE_COMPILER_TRACING currently requires "
+      "-DIREE_ENABLE_RUNTIME_TRACING=ON")
+endif()
+
 # TODO(#8469): remove the dependency on cpuinfo entirely.
 set(IREE_ENABLE_CPUINFO_DEFAULT ON)
 if(CMAKE_SYSTEM_NAME MATCHES "Darwin|Emscripten|Windows|WindowsStore")
@@ -74,8 +80,6 @@ option(IREE_BUILD_SAMPLES "Builds IREE sample projects." ON)
 option(IREE_BUILD_PYTHON_BINDINGS "Builds the IREE python bindings" OFF)
 option(IREE_BUILD_TRACY "Builds tracy server tools." OFF)
 option(IREE_BUILD_BUNDLED_LLVM "Builds the bundled llvm-project (vs using installed)" ON)
-
-option(IREE_BYTECODE_MODULE_FORCE_LLVM_SYSTEM_LINKER "Use the system linker when generating IREE modules in tests/samples/benchmarks (useful for Tracy)." OFF)
 
 # Properties controlling version and naming of release artifacts.
 set(IREE_RELEASE_PACKAGE_SUFFIX "" CACHE STRING "Suffix to append to distributed package names")
@@ -124,6 +128,11 @@ option(IREE_COMPILER_BUILD_SHARED_LIBS "Enables BUILD_SHARED_LIBS CMake mode for
 # This option is considered experimental and should not be relied on until
 # CI coverage is established.
 option(BUILD_SHARED_LIBS "Instructs CMake to build libraries as shared if possible" OFF)
+
+# Control of LTO settings for the runtime build.
+set(IREE_RUNTIME_OPTIMIZATION_PROFILE "" CACHE STRING
+    "Build optimization profile to apply. One of '', 'lto', 'size'.")
+set(IREE_LTO_MODE "full" CACHE STRING "LTO type, 'thin' or 'full'. Only consulted on clang-like compilers.")
 
 #-------------------------------------------------------------------------------
 # IREE command-line tooling configuration
@@ -185,7 +194,6 @@ endif()
 # Experimental project flags
 #-------------------------------------------------------------------------------
 
-option(IREE_BUILD_EXPERIMENTAL_CPU_UKERNEL_PLUGINS "Build experimental plugins making builtin ukernels available to llvm-cpu modules compiled with --iree-llvmcpu-enable-ukernels" OFF)
 option(IREE_BUILD_EXPERIMENTAL_WEB_SAMPLES "Builds experimental web samples." OFF)
 
 #-------------------------------------------------------------------------------
@@ -211,6 +219,18 @@ else()
     endif()
   endif()
 endif()
+
+#-------------------------------------------------------------------------------
+# HIP Default Target Configuration.
+#
+# HIP does not have a stable instruction set like NVIDIA PTX; it requires
+# binaries specific to a target chip. We have tests that generate and run
+# deployable code which need to specify the proper target chip.
+#-------------------------------------------------------------------------------
+
+set(IREE_HIP_TEST_TARGET_CHIP "" CACHE STRING
+  "Target chip for HIP tests that need to compile device code. \
+   Defaults to empty string to disable tests.")
 
 #-------------------------------------------------------------------------------
 # Runtime HAL Driver Options
@@ -247,6 +267,13 @@ if(NOT IREE_CUDA_AVAILABLE OR CMAKE_CROSSCOMPILING)
   set(IREE_HAL_DRIVER_CUDA_DEFAULT OFF)
 endif()
 
+# HIP support is enabled by default if not cross compiling. Note: a HIP-compatible
+# GPU with drivers is still required to actually run HIP workloads.
+set(IREE_HAL_DRIVER_HIP_DEFAULT ${IREE_HAL_DRIVER_DEFAULTS})
+if(CMAKE_CROSSCOMPILING)
+  set(IREE_HAL_DRIVER_HIP_DEFAULT OFF)
+endif()
+
 # Vulkan support is enabled by default if the platform might support Vulkan.
 # Apple platforms support Metal instead of Vulkan, though MoltenVK may work.
 set(IREE_HAL_DRIVER_VULKAN_DEFAULT ${IREE_HAL_DRIVER_DEFAULTS})
@@ -262,6 +289,7 @@ if(NOT APPLE OR NOT ${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm64")
 endif()
 
 option(IREE_HAL_DRIVER_CUDA "Enables the 'cuda' runtime HAL driver" ${IREE_HAL_DRIVER_CUDA_DEFAULT})
+option(IREE_HAL_DRIVER_HIP "Enables the 'hip' runtime HAL driver" ${IREE_HAL_DRIVER_HIP_DEFAULT})
 option(IREE_HAL_DRIVER_LOCAL_SYNC "Enables the 'local-sync' runtime HAL driver" ${IREE_HAL_DRIVER_DEFAULTS})
 option(IREE_HAL_DRIVER_LOCAL_TASK "Enables the 'local-task' runtime HAL driver" ${IREE_HAL_DRIVER_DEFAULTS})
 option(IREE_HAL_DRIVER_VULKAN "Enables the 'vulkan' runtime HAL driver" ${IREE_HAL_DRIVER_VULKAN_DEFAULT})
@@ -280,13 +308,6 @@ set(IREE_HAL_EXECUTABLE_PLUGIN_SYSTEM_LIBRARY_DEFAULT ${IREE_HAL_EXECUTABLE_PLUG
 if(EMSCRIPTEN)
   set(IREE_HAL_EXECUTABLE_LOADER_EMBEDDED_ELF_DEFAULT OFF)
   set(IREE_HAL_EXECUTABLE_PLUGIN_EMBEDDED_ELF_DEFAULT OFF)
-endif()
-
-# If forcing system libraries (for TSAN/debugging tools/etc) then ensure the
-# system library loader is linked in.
-if(IREE_BYTECODE_MODULE_FORCE_LLVM_SYSTEM_LINKER)
-  set(IREE_HAL_EXECUTABLE_LOADER_SYSTEM_LIBRARY_DEFAULT ON)
-  set(IREE_HAL_EXECUTABLE_PLUGIN_SYSTEM_LIBRARY_DEFAULT ON)
 endif()
 
 # If no local driver is enabled then we force all the loaders/imports off; this
@@ -316,6 +337,9 @@ endif()
 message(STATUS "IREE HAL drivers:")
 if(IREE_HAL_DRIVER_CUDA)
   message(STATUS "  - cuda")
+endif()
+if(IREE_HAL_DRIVER_HIP)
+  message(STATUS "  - hip")
 endif()
 if(IREE_HAL_DRIVER_LOCAL_SYNC)
   message(STATUS "  - local-sync")
@@ -385,7 +409,7 @@ cmake_dependent_option(IREE_TARGET_BACKEND_CUDA "Enables the 'cuda' compiler tar
 # Non-default target backends either have additional dependencies or are
 # experimental/niche in some fashion.
 # Disable WebGPU by default - it has complex deps and is under development.
-cmake_dependent_option(IREE_TARGET_BACKEND_WEBGPU "Enables the 'webgpu' compiler target backend" OFF ${IREE_BUILD_COMPILER} OFF)
+cmake_dependent_option(IREE_TARGET_BACKEND_WEBGPU_SPIRV "Enables the 'webgpu' compiler target backend" OFF ${IREE_BUILD_COMPILER} OFF)
 
 #-------------------------------------------------------------------------------
 # Compiler Input Dialects
@@ -431,36 +455,12 @@ endif()
 option(IREE_ENABLE_ASAN "Enable address sanitizer" OFF)
 option(IREE_ENABLE_MSAN "Enable memory sanitizer" OFF)
 option(IREE_ENABLE_TSAN "Enable thread sanitizer" OFF)
-option(IREE_BYTECODE_MODULE_ENABLE_ASAN "Enable address sanitizer in IREE modules in tests" OFF)
-option(IREE_BYTECODE_MODULE_ENABLE_TSAN "Enable thread sanitizer in IREE modules in tests" OFF)
 option(IREE_ENABLE_UBSAN "Enable undefined behavior sanitizer" OFF)
 option(IREE_ENABLE_SPLIT_DWARF "Enable gsplit-dwarf for debug information if the platform supports it" OFF)
 option(IREE_ENABLE_THIN_ARCHIVES "Enables thin ar archives (elf systems only). Disable for released static archives" OFF)
 option(IREE_LINK_COMPILER_SHARED_LIBRARY "Links IREE tools using the compiler compiled into a shared library" ON)
 option(IREE_ENABLE_WERROR_FLAG "Enable `-Werror` flag, treat error as warning" ON)
-
-# STREQUAL feels wrong here - we don't care about the exact true-value used,
-# ON or TRUE or something else. But we haven't been able to think of a less bad
-# alternative. https://github.com/openxla/iree/pull/8474#discussion_r840790062
-if(NOT IREE_ENABLE_TSAN STREQUAL IREE_BYTECODE_MODULE_ENABLE_TSAN)
-  message(SEND_ERROR
-      "IREE_ENABLE_TSAN and IREE_BYTECODE_MODULE_ENABLE_TSAN must be "
-      "simultaneously ON or OFF. "
-      "A discrepancy between the two would cause tests to crash as IREE "
-      "runtime code (controlled by IREE_ENABLE_TSAN) calls into test IREE "
-      "modules (controlled by IREE_BYTECODE_MODULE_ENABLE_TSAN)")
-endif()
-
-if(IREE_BUILD_COMPILER)
-  if(IREE_BYTECODE_MODULE_ENABLE_ASAN OR IREE_BYTECODE_MODULE_ENABLE_TSAN)
-    if(NOT IREE_BYTECODE_MODULE_FORCE_LLVM_SYSTEM_LINKER)
-      message(SEND_ERROR
-          "When IREE_BYTECODE_MODULE_ENABLE_ASAN or IREE_BYTECODE_MODULE_ENABLE_TSAN is ON, "
-          "IREE_BYTECODE_MODULE_FORCE_LLVM_SYSTEM_LINKER must also be ON. "
-          "ASAN/TSAN instrumentation is not currently supported in embedded modules.")
-    endif()
-  endif()
-endif()
+option(IREE_ENABLE_POSITION_INDEPENDENT_CODE "Enable position independent code" TRUE)
 
 if(IREE_LINK_COMPILER_SHARED_LIBRARY AND IREE_ENABLE_COMPILER_TRACING)
   message(SEND_ERROR
@@ -485,6 +485,8 @@ if(IREE_ENABLE_CCACHE)
         "IREE_ENABLE_CCACHE was set, but executable `ccache` was not found.")
   endif()
 endif()
+
+set (CMAKE_POSITION_INDEPENDENT_CODE ${IREE_ENABLE_POSITION_INDEPENDENT_CODE})
 
 option(IREE_DEV_MODE "Configure settings to optimize for IREE development (as opposed to CI or release)" OFF)
 
@@ -578,8 +580,6 @@ include(iree_plugin_register)
 set(IREE_PACKAGE_ROOT_DIR "${CMAKE_CURRENT_LIST_DIR}")
 set(IREE_PACKAGE_ROOT_PREFIX "iree")
 
-set(CMAKE_POSITION_INDEPENDENT_CODE TRUE)
-
 #-------------------------------------------------------------------------------
 # Experimental ROCM HAL driver
 # Enable with: -DIREE_EXTERNAL_HAL_DRIVERS=rocm
@@ -594,22 +594,6 @@ iree_register_external_hal_driver(
     iree::experimental::rocm::registration
   REGISTER_FN
     iree_hal_rocm_driver_module_register
-)
-
-#-------------------------------------------------------------------------------
-# Experimental HIP HAL driver
-# Enable with: -DIREE_EXTERNAL_HAL_DRIVERS=hip
-#-------------------------------------------------------------------------------
-
-iree_register_external_hal_driver(
-  NAME
-    hip
-  SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/experimental/hip"
-  DRIVER_TARGET
-    iree::experimental::hip::registration
-  REGISTER_FN
-    iree_hal_hip_driver_module_register
 )
 
 #-------------------------------------------------------------------------------
@@ -1041,10 +1025,6 @@ endif()
 
 if(IREE_BUILD_EXPERIMENTAL_WEB_SAMPLES)
   add_subdirectory(experimental/web)
-endif()
-
-if(IREE_BUILD_EXPERIMENTAL_CPU_UKERNEL_PLUGINS)
-  add_subdirectory(experimental/cpu_ukernel)
 endif()
 
 set(IREE_PUBLIC_INCLUDE_DIRS "${IREE_COMMON_INCLUDE_DIRS}"

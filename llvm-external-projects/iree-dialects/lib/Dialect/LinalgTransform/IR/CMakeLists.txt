@@ -8,16 +8,13 @@ add_mlir_library(IREELinalgTransformDialect
   IREEDialectsTransforms
   MLIRIR
 
-  # Dialects
-  IREELinalgExtDialect
-  IREELinalgExtTransforms
-
   MLIRAsyncDialect
   MLIRControlFlowInterfaces
   MLIRLinalgDialect
   MLIRPDLDialect
   MLIRRewrite
   MLIRTransformDialect
+  MLIRTransformDialectInterfaces
   MLIRTransformPDLExtension
 
   # Transforms
