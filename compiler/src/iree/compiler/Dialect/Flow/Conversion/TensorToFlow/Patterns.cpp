@@ -258,22 +258,43 @@ struct ConvertTensorDialectReshapeOpPattern
     // flow.reshape only takes dynamic dims for the result, source dims
     // (ignore static dimensions)
     SmallVector<Value> destSizes;
+    SmallVector<int64_t> newShape;
+    auto fromElementsOp = op.getShape().getDefiningOp<tensor::FromElementsOp>();
     for (int i = 0; i < shapeOperandType.getShape()[0]; i++) {
       Value idx = rewriter.create<arith::ConstantIndexOp>(loc, i);
       Value element = rewriter.create<tensor::ExtractOp>(loc, op.getShape(),
                                                          ValueRange({idx}));
+      // Dynamic dim.
       if (ShapedType::isDynamic(resultType.getShape()[i])) {
-        auto elementTy = element.getType();
-        if (isa<IntegerType>(elementTy)) {
-          element = rewriter.create<arith::IndexCastOp>(
-              loc, rewriter.getIndexType(), element);
+        auto definingOp = fromElementsOp
+                              ? fromElementsOp->getOperand(i)
+                                    .getDefiningOp<arith::ConstantOp>()
+                              : nullptr;
+        // If dynamic dim's value is just derived from a constant
+        // then we can make that dim static in the flow.tensor.reshape op.
+        if (definingOp) {
+          newShape.push_back(cast<IntegerAttr>(definingOp.getValue()).getInt());
+        } else {
+          auto elementTy = element.getType();
+          if (isa<IntegerType>(elementTy)) {
+            element = rewriter.create<arith::IndexCastOp>(
+                loc, rewriter.getIndexType(), element);
+          }
+          newShape.push_back(ShapedType::kDynamic);
+          destSizes.push_back(element);
         }
-        destSizes.push_back(element);
+        // Static dims.
+      } else {
+        newShape.push_back(resultType.getShape()[i]);
       }
     }
 
-    rewriter.replaceOpWithNewOp<IREE::Flow::TensorReshapeOp>(
-        op, resultType, input, srcSizes, destSizes);
+    auto reshapeOp = rewriter.create<IREE::Flow::TensorReshapeOp>(
+        op->getLoc(),
+        RankedTensorType::get(newShape, resultType.getElementType()), input,
+        srcSizes, destSizes);
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType,
+                                                reshapeOp.getResult());
     return success();
   }
 };
@@ -328,7 +349,7 @@ void populateTensorToFlowConversionPatterns(MLIRContext *context,
 
 void populateTensorDialectCastOpPattern(MLIRContext *context,
                                         RewritePatternSet &patterns) {
-  patterns.insert<ConvertTensorCastPattern>(context);
+  patterns.insert<ConvertTensorCastPattern,ConvertTensorDialectReshapeOpPattern>(context);
 }
 
 } // namespace mlir::iree_compiler::IREE::Flow
