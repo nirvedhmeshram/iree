@@ -330,8 +330,10 @@ struct LowerMultiMmaPattern : public OpRewritePattern<IREE::GPU::MultiMmaOp> {
     FailureOr<Value> concreteMmaOp = mmaOp.getKind().buildMmaOperation(
         rewriter, mmaOp.getLoc(), cCast.getType(), aCast, bCast, cCast);
     assert(succeeded(concreteMmaOp) && "Failed to create mma op");
-    rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(
+    auto shapeCastOp = rewriter.replaceOpWithNewOp<vector::ShapeCastOp>(
         mmaOp, mmaOp.getAcc().getType(), *concreteMmaOp);
+    rewriter.setInsertionPointAfter(shapeCastOp);
+    rewriter.create<gpu::BarrierOp>(shapeCastOp.getLoc());
     return success();
   }
 };
