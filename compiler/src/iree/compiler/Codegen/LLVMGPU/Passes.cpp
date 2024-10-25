@@ -19,7 +19,6 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
-#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/Utils/PassUtils.h"
@@ -191,23 +190,18 @@ static void addBufferizePasses(OpPassManager &funcPassManager) {
 }
 
 static void tileAndDistributeToWorkgroup(
-    OpPassManager &funcPassManager, bool useForall,
+    OpPassManager &funcPassManager,
     std::optional<ConvertToDestinationPassingStylePassOptions>
         convertToDpsOptions = ConvertToDestinationPassingStylePassOptions{}) {
-  if (useForall) {
-    funcPassManager.addPass(
-        createTileAndDistributeToWorkgroupsUsingForallOpPass());
-  } else {
-    funcPassManager.addPass(createTileAndDistributeToWorkgroupsPass(
-        kNumMaxParallelDims,
-        linalg::DistributionMethod::CyclicNumProcsEqNumIters));
-    funcPassManager.addPass(createCSEPass());
-    if (convertToDpsOptions) {
-      funcPassManager.addPass(
-          createConvertToDestinationPassingStylePass(*convertToDpsOptions));
-    }
-  }
+  funcPassManager.addPass(createTileAndDistributeToWorkgroupsPass(
+      kNumMaxParallelDims,
+      linalg::DistributionMethod::CyclicNumProcsEqNumIters));
+  funcPassManager.addPass(createCSEPass());
 
+  if (convertToDpsOptions) {
+    funcPassManager.addPass(
+        createConvertToDestinationPassingStylePass(*convertToDpsOptions));
+  }
   // TODO(#16421): Disable decomposition due to failure in bufferization.
   // funcPassManager.addPass(
   //     IREE::LinalgExt::createTileAndDecomposeAttentionPass());
@@ -218,8 +212,7 @@ static void tileAndDistributeToWorkgroup(
 static void tileAndBufferize(OpPassManager &funcPassManager) {
   ConvertToDestinationPassingStylePassOptions options;
   options.useWARForCooperativeMatrixCodegen = true;
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false,
-                               /*convertToDpsOptions=*/options);
+  tileAndDistributeToWorkgroup(funcPassManager, options);
   addBufferizePasses(funcPassManager);
 }
 
@@ -250,7 +243,7 @@ static void addGPUVectorizationPasses(OpPassManager &funcPassManager,
 //===---------------------------------------------------------------------===//
 
 void addGPUVectorizationPassPipeline(OpPassManager &funcPassManager) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
 
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCanonicalizerPass());
@@ -330,45 +323,22 @@ static void addGPUBufferizePasses(OpPassManager &funcPassManager) {
   funcPassManager.addPass(createCSEPass());
 }
 
-/// Control function for decomposing pack and unpack ops. Returns true if the
-/// op is a PackOp with a DispatchTensorLoadOp producer, or an UnPackOp with
-/// only DispatchTensorStoreOp consumers.
-LogicalResult isAtBoundary(Operation *op) {
-  if (isa<tensor::PackOp>(op)) {
-    if (isa_and_nonnull<IREE::Flow::DispatchTensorLoadOp>(
-            op->getOperand(0).getDefiningOp())) {
-      return success();
-    }
-  } else if (isa<tensor::UnPackOp>(op)) {
-    if (llvm::all_of(op->getUsers(), [](Operation *user) {
-          return isa<IREE::Flow::DispatchTensorStoreOp>(user);
-        })) {
-      return success();
-    }
-  }
-  return failure();
-}
-
 void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
                                    const GPUPipelineOptions &pipelineOptions) {
+  tileAndDistributeToWorkgroup(funcPassManager,
+                               /*convertToDpsOptions=*/std::nullopt);
+
   // Step 1. Promote matmul operands and pack to intrinsic shapes.
   funcPassManager.addPass(createGPUPromoteMatmulOperandsPass());
   funcPassManager.addPass(IREE::GPU::createPackToIntrinsicsPass());
-  // Decompose packs and unpacks that are at the function boundary.
-  funcPassManager.addPass(createDecomposeBoundaryPackUnPackOpsPass());
 
-  // Step 1.5. Expand result shapes of MultiMmaOps before tiling, and
-  // propagate reshapes to the function boundary.
+  // Step 1.5. Expand result shapes of MultiMmaOps before reduction tiling.
   {
     IREE::GPU::ConcretizeMmaShapesPassOptions options;
     options.concretizeInputs = false;
     options.concretizeResult = true;
     funcPassManager.addPass(IREE::GPU::createConcretizeMmaShapesPass());
   }
-  funcPassManager.addPass(createPropagateReshapesByExpansionPass());
-
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/true,
-                               /*convertToDpsOptions=*/std::nullopt);
 
   // Step 2. Tile and fuse tileable ops to reduction loops.
   {
@@ -498,7 +468,7 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
 //===---------------------------------------------------------------------===//
 
 void addGPUWinogradVectorizePassPipeline(OpPassManager &funcPassManager) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
 
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCanonicalizerPass());
@@ -535,7 +505,7 @@ void addGPUWinogradVectorizePassPipeline(OpPassManager &funcPassManager) {
 
 void addGPUMatmulSimtPassPipeline(OpPassManager &funcPassManager,
                                   const GPUPipelineOptions &options) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
 
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCanonicalizerPass());
@@ -739,7 +709,7 @@ void addGPUMatmulTensorCoreMmaSyncPassPipeline(
 
 void addGPUTransposePassPipeline(OpPassManager &funcPassManager,
                                  const GPUPipelineOptions &options) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
 
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCanonicalizerPass());
@@ -844,7 +814,7 @@ static void addVectorBufferizePasses(OpPassManager &funcPassManager) {
 void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
                                         const GPUPipelineOptions &options,
                                         bool usePadToModelSharedMemcpy) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
 
   ReorderWorkgroupsStrategy reorderStrategy =
       getReorderWorkgroupsStrategy(options.reorderStrategy);
@@ -939,7 +909,7 @@ void addGPUVectorDistributePassPipeline(OpPassManager &funcPassManager,
 }
 
 void addGPUWarpReductionPassPipeline(OpPassManager &funcPassManager) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
   funcPassManager.addPass(createRematerializeParallelOpsPass());
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createGPUTileReductionPass());
@@ -983,7 +953,7 @@ void addGPUWarpReductionPassPipeline(OpPassManager &funcPassManager) {
 }
 
 void addGPUPackUnPackPasses(OpPassManager &funcPassManager) {
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false);
+  tileAndDistributeToWorkgroup(funcPassManager);
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCSEPass());
 
@@ -1019,8 +989,7 @@ void addGPUDefaultPassPipeline(OpPassManager &funcPassManager,
                                const GPUPipelineOptions &options) {
   ConvertToDestinationPassingStylePassOptions dpsOptions;
   dpsOptions.useWARForCooperativeMatrixCodegen = true;
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/false,
-                               /*convertToDpsOptions=*/dpsOptions);
+  tileAndDistributeToWorkgroup(funcPassManager, dpsOptions);
   if (options.enableUkernels) {
     funcPassManager.addPass(createGPULowerToUKernelsPass());
   }
