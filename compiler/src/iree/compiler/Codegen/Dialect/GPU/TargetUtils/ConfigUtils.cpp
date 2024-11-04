@@ -154,12 +154,12 @@ getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
   // First try to find a schedule with an exactly matching intrinsic.
   std::optional<GPUMMASchedule> schedule =
       deduceMMASchedule(problem, intrinsics, seeds, maxSharedMemoryBytes,
-                        targetSubgroupSize, transposedLhs, transposedRhs);
+                        targetSubgroupSize, transposedLhs, transposedRhs, /*canUpcastAcc=*/false, /*mustBeAligned*/false);
   if (!schedule) {
     // Then try again by allowing upcasting accumulator.
     schedule = deduceMMASchedule(
         problem, intrinsics, seeds, maxSharedMemoryBytes, targetSubgroupSize,
-        transposedLhs, transposedRhs, /*canUpcastAcc=*/true);
+        transposedLhs, transposedRhs, /*canUpcastAcc=*/true, /*mustbeAligned*/false);
   }
   return schedule;
 }
@@ -269,23 +269,16 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
     reductionTileSizes[k] = 1;
   }
 
-  // Adjust the inner bound size for packing to intrinsic shapes, since tiling
-  // happens after packing.
-  assert(bounds[mDims.back()] % schedule->mSize == 0 &&
-         bounds[nDims.back()] % schedule->nSize == 0 &&
-         "expected inner bound to be evenly divisible by schedule sizes.");
-  bounds[mDims.back()] /= schedule->mSize;
-  bounds[nDims.back()] /= schedule->nSize;
 
   // Compute the M/N dimension tile sizes by multiplying subgroup information.
   for (auto [i, mDim] : llvm::enumerate(mDims)) {
     workgroupTileSizes[mDim] =
-        schedule->mSubgroupCounts[i] * schedule->mTileSizes[i];
+        schedule->mSubgroupCounts[i] * schedule->mTileSizes[i] * schedule->mSize;
     subgroupTileSizes[mDim] = schedule->mTileSizes[i];
   }
   for (auto [i, nDim] : llvm::enumerate(nDims)) {
     workgroupTileSizes[nDim] =
-        schedule->nSubgroupCounts[i] * schedule->nTileSizes[i];
+        schedule->nSubgroupCounts[i] * schedule->nTileSizes[i]  * schedule->nSize;
     subgroupTileSizes[nDim] = schedule->nTileSizes[i];
   }
 
