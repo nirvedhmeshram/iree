@@ -337,6 +337,8 @@ LogicalResult isAtBoundary(Operation *op) {
 
 void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
                                    const GPUPipelineOptions &pipelineOptions) {
+  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/true,
+                               /*convertToDpsOptions=*/std::nullopt);
   if (pipelineOptions.useIgemmConvolution) {
     funcPassManager.addPass(createConvolutionToIGEMMPass());
   }
@@ -356,9 +358,6 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
     funcPassManager.addPass(IREE::GPU::createConcretizeMmaShapesPass());
   }
   funcPassManager.addPass(createPropagateReshapesByExpansionPass());
-
-  tileAndDistributeToWorkgroup(funcPassManager, /*useForall=*/true,
-                               /*convertToDpsOptions=*/std::nullopt);
 
   // Step 2. Tile and fuse tileable ops to reduction loops.
   {

@@ -73,7 +73,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [4, 4, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [2, 2],
   mma_kind = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>,
@@ -140,7 +140,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [4, 4, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [2, 2],
   mma_kind = #iree_gpu.mma_layout<WMMA_F32_16x16x16_F16>,
@@ -207,7 +207,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [4, 4, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [2, 2],
   mma_kind = #iree_gpu.mma_layout<MFMA_F32_16x16x4_F32>,
@@ -263,7 +263,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [4, 4, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [2, 2],
   mma_kind = #iree_gpu.mma_layout<MFMA_F32_16x16x32_F8E4M3FNUZ>,
@@ -319,7 +319,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [2, 2, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [1, 1],
   mma_kind = #iree_gpu.mma_layout<MFMA_I32_32x32x16_I8>,
@@ -375,7 +375,7 @@ hal.executable public @main {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [4, 4, 0],
+  workgroup = [64, 64, 0],
   reduction = [0, 0, 2],
   subgroup = [2, 2],
   mma_kind = #iree_gpu.mma_layout<WMMA_F16_16x16x16_F16>,
@@ -578,7 +578,7 @@ hal.executable public @main {
   mma_kind = #iree_gpu.mma_layout<WMMA_I32_16x16x16_I8>,
   reduction = [0, 0, 4],
   subgroup = [2, 4, 0],
-  workgroup = [4, 8, 0],
+  workgroup = [64, 128, 0],
   promote_operands = [0, 1]
 }>
 
@@ -630,8 +630,8 @@ hal.executable public @main {
 // CHECK-DAG:      memref.alloc() : memref<64x72xi8, #gpu.address_space<workgroup>>
 // CHECK-DAG:      memref.alloc() : memref<64x136xi8, #gpu.address_space<workgroup>>
 // CHECK-COUNT-32: amdgpu.wmma {{.*}} : vector<16xi8>, vector<16xi8>, vector<8xi32>
-// CHECK:          vector.transfer_write {{.*}} : vector<4x1x2x8x1xi8>, memref<16x16x196x8x2xi8, #hal.descriptor_type<storage_buffer>>
-// CHECK:          vector.transfer_write {{.*}} : vector<2x8x1x4x1xi8>, memref<196x8x2x16x16xi8, #hal.descriptor_type<storage_buffer>>
+// CHECK:          vector.transfer_write {{.*}} : vector<4x1x2x8x1xi8>, memref<8x16x4x8x2xi8, strided<[50176, 3136, 16, 2, 1], offset: ?>, #hal.descriptor_type<storage_buffer>>
+// CHECK:          vector.transfer_write {{.*}} : vector<2x8x1x4x1xi8>, memref<4x8x2x8x16xi8, strided<[4096, 512, 256, 16, 1], offset: ?>, #hal.descriptor_type<storage_buffer>>
 
 // -----
 

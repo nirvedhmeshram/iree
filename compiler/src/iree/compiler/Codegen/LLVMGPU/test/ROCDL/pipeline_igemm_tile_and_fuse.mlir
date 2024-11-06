@@ -17,7 +17,7 @@
        use_igemm_convolution = true>
   }>
 #config = #iree_gpu.lowering_config<{
-  workgroup = [1, 4, 1, 16, 0],
+  workgroup = [1, 4, 16, 256, 0],
   reduction = [0, 0, 0, 0, 2],
   subgroup = [1, 4, 1, 4, 0],
   mma_kind = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>,
@@ -59,11 +59,15 @@ hal.executable private @main {
 //      CHECK-DAG:   %[[C720:.+]] = arith.constant 720 : index
 //      CHECK-DAG:   %[[C2:.+]] = arith.constant 2 : index
 //          CHECK:   scf.forall ({{.*}}) in (2, 4, 5) {
+//          CHECK:     %[[SUBVIEW:.+]] = memref.subview %[[B1]]
+//     CHECK-SAME:       memref<3x3x1280x1280xf16, #hal.descriptor_type<storage_buffer>> to
+//     CHECK-SAME:       memref<3x3x1280x256xf16, strided<[4915200, 1638400, 1280, 1], offset: ?>, #hal.descriptor_type<storage_buffer>>
+//          CHECK:      %[[COLLAPSE:.+]] = memref.collapse_shape %[[SUBVIEW]]
 //          CHECK:     %[[LOOP:.+]] = scf.for %[[IV:.+]] = %[[C0]] to %[[C720]] step %[[C2]] {{.*}} -> (vector<1x4x1x4x4x1xf32>)
 //          CHECK:       gpu.barrier
 //      CHECK-DAG:       %[[LHS_RD:.+]] = vector.transfer_read %[[B0]]{{.*}} vector<8xf16>
 //      CHECK-DAG:       vector.transfer_write %[[LHS_RD]]
-//      CHECK-DAG:       %[[RHS_RD:.+]] = vector.transfer_read %[[B1]]{{.*}} vector<8xf16>
+//      CHECK-DAG:       %[[RHS_RD:.+]] = vector.transfer_read %[[COLLAPSE]]{{.*}} vector<8xf16>
 //      CHECK-DAG:       vector.transfer_write %[[RHS_RD]]
 //          CHECK:       gpu.barrier
 //      CHECK-DAG:       %[[LHS_MM0:.+]] = vector.transfer_read {{.*}} vector<4x1x1x2x4xf16>
