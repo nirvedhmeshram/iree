@@ -34,9 +34,20 @@ getExpandedShape(SmallVector<ReassociationIndices> reIndices,
   auto outerShapeIter = expandedShape.begin();
   for (auto [reassociations, destSize] :
        llvm::zip_equal(reIndices, destType.getShape())) {
+    // Dynamic destination dims that are not getting expanded are allowed.
+    if(ShapedType::isDynamic(destSize) && reassociations.size() == 1){
+      expandedShape.insert(outerShapeIter++, destSize);
+      totalInnerSizes.push_back(1);
+      continue;
+    }
+    // Dynamic destination dims that are expanded are currently unsupported but this support can be added if needed.
+    if(ShapedType::isDynamic(destSize)){
+      return failure();
+    }
     int64_t totalInnerSize = 1;
     for (int64_t reasociation : llvm::drop_begin(reassociations)) {
       int64_t expandedInnerSize = sliceStaticSizes[reasociation];
+      // It is not safe to do this pattern if inner dimensions are dynamic.
       if (ShapedType::isDynamic(expandedInnerSize)) {
         return failure();
       }
@@ -141,8 +152,13 @@ static void expandVerifiedUsers(PatternRewriter &rewriter, Location loc,
       rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
           extractSliceOp, resultType, extractSliceOp.getSource(),
           expandedOffsets, expandedSizes, expandedStrides);
+    llvm::outs()<<"dojne in extract slice\n";
+    llvm::outs().flush();
+
     } else if (auto parallelInsertOp =
                    dyn_cast<tensor::ParallelInsertSliceOp>(user)) {
+      llvm::outs()<<"starting parallelinsert slice\n";
+    llvm::outs().flush();
       auto collapseShapeOp =
           parallelInsertOp.getSource().getDefiningOp<tensor::CollapseShapeOp>();
       RankedTensorType resultType = collapseShapeOp.getSrcType();
@@ -182,9 +198,14 @@ struct ExpandDestinationForallOp final
 
     // Get the destination to expand.
     Value insertDest = parallelInsertOp.getDest();
+  
+
+    parallelInsertOp->dump();
 
     // Get the enclosing scf.forall op.
     OpResult tiedResult = parallelInsertOp.getTiedOpResult();
+    int64_t tiedResultIdx = tiedResult.getResultNumber();
+
     auto forallOp = dyn_cast<scf::ForallOp>(tiedResult.getOwner());
     if (!forallOp) {
       return failure();
@@ -198,9 +219,6 @@ struct ExpandDestinationForallOp final
     // This pattern only supports forall ops with single
     // output.
     SmallVector<Value> forallOutputs(forallOp.getOutputs());
-    if (forallOutputs.size() != 1) {
-      return failure();
-    }
 
     SmallVector<ReassociationIndices> reIndices =
         collapseOp.getReassociationIndices();
@@ -230,26 +248,23 @@ struct ExpandDestinationForallOp final
                         reIndices, forallOp);
     rewriter.setInsertionPoint(forallOp);
 
-    Operation *outOp = forallOutputs[0].getDefiningOp();
-    if (!outOp) {
-      return failure();
-    }
-
     // Create the expand -> new scf.forall -> collapse chain.
     Type expandedDestType = RankedTensorType::get(
         expandedDestShape,
-        cast<ShapedType>(outOp->getResult(0).getType()).getElementType());
+        cast<ShapedType>(forallOutputs[tiedResultIdx].getType()).getElementType());
     auto expandedDest = rewriter.create<tensor::ExpandShapeOp>(
-        loc, expandedDestType, outOp->getResult(0), reIndices);
+        loc, expandedDestType, forallOutputs[tiedResultIdx], reIndices);
+
+    forallOutputs[tiedResultIdx] = expandedDest;
 
     scf::ForallOp newForallOp = rewriter.create<scf::ForallOp>(
         loc, forallOp.getMixedLowerBound(), forallOp.getMixedUpperBound(),
-        forallOp.getMixedStep(), ValueRange{expandedDest},
+        forallOp.getMixedStep(), forallOutputs,
         forallOp.getMappingAttr());
 
     auto collapsedResultOp = rewriter.create<tensor::CollapseShapeOp>(
-        loc, cast<ShapedType>(forallOp->getResult(0).getType()),
-        newForallOp->getResult(0), reIndices);
+        loc, cast<ShapedType>(forallOp->getResult(tiedResultIdx).getType()),
+        newForallOp->getResult(tiedResultIdx), reIndices);
 
     // Merge the old scf.forall block which has the expanded users into the new
     // scf.forall which has the expanded destination.
@@ -263,7 +278,12 @@ struct ExpandDestinationForallOp final
                          argReplacements);
 
     // Replaces the uses of the old scf.forall with the new scf.forall
-    forallOp->getResult(0).replaceAllUsesWith(collapsedResultOp->getResult(0));
+    for(int idx = 0; idx < forallOp->getNumResults(); ++idx){
+    if(idx == tiedResultIdx)
+    forallOp->getResult(tiedResultIdx).replaceAllUsesWith(collapsedResultOp->getResult(0));
+    else
+         forallOp->getResult(idx).replaceAllUsesWith(newForallOp->getResult(idx));
+    }
     return success();
   }
 };

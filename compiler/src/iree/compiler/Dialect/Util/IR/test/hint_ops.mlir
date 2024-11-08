@@ -5,7 +5,7 @@
 // CHECK-SAME: %[[ARG1:[a-zA-Z0-9$._-]+]]
 util.func public @parse_print_barrier(%arg0 : tensor<i32>, %arg1 : tensor<i32>) {
   // CHECK-NEXT: util.optimization_barrier %[[ARG0]] : tensor<i32>
-  %1 = util.optimization_barrier %arg0 : tensor<i32>
+  1% = util.optimization_barrier %arg0 : tensor<i32>
 
   // CHECK-NEXT: util.optimization_barrier %[[ARG0]], %[[ARG1]] : tensor<i32>, tensor<i32>
   %2:2 = util.optimization_barrier %arg0, %arg1 : tensor<i32>, tensor<i32>

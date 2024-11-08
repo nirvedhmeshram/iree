@@ -92,33 +92,35 @@ func.func @fold_collapse_into_stores_dynamic(%arg0 : tensor<2x?x32xf32>) {
 
 #pipeline_layout = #hal.pipeline.layout<constants = 1, bindings = [
     #hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>
-func.func @expand_dest_forall_workgroup_mapped() {
+func.func @expand_dest_forall() {
   %cst = arith.constant 0.000000e+00 : f16
   %c0 = arith.constant 0 : index
+  %index = hal.interface.constant.load layout(#pipeline_layout) ordinal(0) : index
   %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0)
-      flags(Indirect) : !flow.dispatch.tensor<writeonly:tensor<2048x10240xf32>>
-  %1 = tensor.empty() : tensor<2048x10240xf32>
-  %2 = scf.forall (%arg0, %arg1) = (0, 0) to (2048, 10240) step (128, 128)
-    shared_outs(%arg2 = %1) -> (tensor<2048x10240xf32>) {
-    %extracted_slice = tensor.extract_slice %arg2[%arg0, %arg1] [128, 128] [1, 1]
-         : tensor<2048x10240xf32> to tensor<128x128xf32>
-    %3 = tensor.empty() : tensor<8x8x16x8x2xf32>
-    %4 = linalg.fill ins(%cst : f16) outs(%3 : tensor<8x8x16x8x2xf32>) -> tensor<8x8x16x8x2xf32>
-    %5 = tensor.empty() : tensor<8x16x8x8x2xf32>
-    %transposed = linalg.transpose ins(%4 : tensor<8x8x16x8x2xf32>)
-        outs(%5 : tensor<8x16x8x8x2xf32>) permutation = [0, 2, 1, 3, 4]
-    %expanded = tensor.expand_shape %extracted_slice [[0, 1], [2, 3, 4]]
-              output_shape [8, 16, 8, 8, 2] : tensor<128x128xf32> into tensor<8x16x8x8x2xf32>
-    %6 = linalg.copy ins(%transposed : tensor<8x16x8x8x2xf32>)
-         outs(%expanded : tensor<8x16x8x8x2xf32>) -> tensor<8x16x8x8x2xf32>
-    %collapsed = tensor.collapse_shape %6 [[0, 1], [2, 3, 4]] : tensor<8x16x8x8x2xf32> into tensor<128x128xf32>
+      flags(Indirect) : !flow.dispatch.tensor<writeonly:tensor<?x2048x10240xf32>>{%index}
+  %extra_2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0)
+      flags(Indirect) : !flow.dispatch.tensor<writeonly:tensor<32x32xf32>>{%index}
+  %1 = tensor.empty(%index) : tensor<?x2048x10240xf32>
+  %extra = tensor.empty() : tensor<32x32xf32>
+  %2:2 = scf.forall (%arg0, %arg1) = (0, 0) to (2048, 10240) step (128, 128)
+    shared_outs(%other_arg = %extra, %arg2 = %1) -> (tensor<32x32xf32>, tensor<?x2048x10240xf32>) {
+    %extracted_slice = tensor.extract_slice %arg2[%c0, %arg0, %arg1] [1, 128, 128] [1, 1, 1]
+         : tensor<?x2048x10240xf32> to tensor<1x128x128xf32>
+    %expanded = tensor.expand_shape %extracted_slice [[0], [1], [2, 3, 4]]
+              output_shape [1, 128, 8, 8, 2] : tensor<1x128x128xf32> into tensor<1x128x8x8x2xf32>
+    %expanded_barrier = util.optimization_barrier %expanded : tensor<1x128x8x8x2xf32>
+    %collapsed = tensor.collapse_shape %expanded_barrier [[0], [1], [2, 3, 4]] : tensor<1x128x8x8x2xf32> into tensor<1x128x128xf32>
     scf.forall.in_parallel {
-      tensor.parallel_insert_slice %collapsed into %arg2[%arg0, %arg1] [128, 128] [1, 1]
-        : tensor<128x128xf32> into tensor<2048x10240xf32>
+        tensor.parallel_insert_slice %other_arg into %other_arg[%c0, %c0] [32, 32] [1, 1]
+        : tensor<32x32xf32> into tensor<32x32xf32>
+      tensor.parallel_insert_slice %collapsed into %arg2[%c0, %arg0, %arg1] [1, 128, 128] [1, 1, 1]
+        : tensor<1x128x128xf32> into tensor<?x2048x10240xf32>
     }
   } {mapping = [#iree_codegen.workgroup_mapping<y>, #iree_codegen.workgroup_mapping<x>]}
-  flow.dispatch.tensor.store %2, %0, offsets = [0, 0], sizes = [2048, 10240], strides = [1, 1]
-     : tensor<2048x10240xf32> -> !flow.dispatch.tensor<writeonly:tensor<2048x10240xf32>>
+  flow.dispatch.tensor.store %2#1, %0, offsets = [0, 0, 0], sizes = [%index, 2048, 10240], strides = [1, 1, 1]
+     : tensor<?x2048x10240xf32> -> !flow.dispatch.tensor<writeonly:tensor<?x2048x10240xf32>>{%index}
+  flow.dispatch.tensor.store %2#0, %extra_2, offsets = [0, 0], sizes = [32, 32], strides = [1, 1]
+     : tensor<32x32xf32> -> !flow.dispatch.tensor<writeonly:tensor<32x32xf32>>
   return
 }
 
@@ -138,6 +140,35 @@ func.func @expand_dest_forall_workgroup_mapped() {
 //       CHECK:   flow.dispatch.tensor.store %[[SCFFORALL]], %[[SUBSPAN]]
 //  CHECK-SAME:   offsets = [0, 0, 0, 0, 0], sizes = [128, 16, 640, 8, 2], strides = [1, 1, 1, 1, 1]
 //  CHECK-SAME:   !flow.dispatch.tensor<writeonly:tensor<128x16x640x8x2xf32>>
+
+// -----
+
+#pipeline_layout = #hal.pipeline.layout<constants = 1, bindings = [
+    #hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>
+func.func @expand_dest_forall_blocked_by_unsupported_use() {
+  %cst = arith.constant 0.000000e+00 : f16
+  %c0 = arith.constant 0 : index
+  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0)
+      flags(Indirect) : !flow.dispatch.tensor<writeonly:tensor<2048x10240xf32>>
+  %1 = tensor.empty() : tensor<2048x10240xf32>
+  %2 = scf.forall (%arg0, %arg1) = (0, 0) to (2048, 10240) step (128, 128)
+    shared_outs(%arg2 = %1) -> (tensor<2048x10240xf32>) {
+    %extracted_slice = tensor.extract_slice %arg2[%arg0, %arg1] [128, 128] [1, 1]
+         : tensor<2048x10240xf32> to tensor<128x128xf32>
+    %arith_op = arith.negf %extracted_slice : tensor<128x128xf32>
+    %expanded = tensor.expand_shape %arith_op [[0, 1], [2, 3, 4]]
+              output_shape [8, 16, 8, 8, 2] : tensor<128x128xf32> into tensor<8x16x8x8x2xf32>
+    %expanded_barrier = util.optimization_barrier %expanded : tensor<8x16x8x8x2xf32>
+    %collapsed = tensor.collapse_shape %expanded_barrier [[0, 1], [2, 3, 4]] : tensor<8x16x8x8x2xf32> into tensor<128x128xf32>
+    scf.forall.in_parallel {
+      tensor.parallel_insert_slice %collapsed into %arg2[%arg0, %arg1] [128, 128] [1, 1]
+        : tensor<128x128xf32> into tensor<2048x10240xf32>
+    }
+  } {mapping = [#iree_codegen.workgroup_mapping<y>, #iree_codegen.workgroup_mapping<x>]}
+  flow.dispatch.tensor.store %2, %0, offsets = [0, 0], sizes = [2048, 10240], strides = [1, 1]
+     : tensor<2048x10240xf32> -> !flow.dispatch.tensor<writeonly:tensor<2048x10240xf32>>
+  return
+}
 
 // -----
 
