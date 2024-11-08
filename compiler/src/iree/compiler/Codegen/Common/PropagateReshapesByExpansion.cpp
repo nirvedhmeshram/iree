@@ -93,18 +93,6 @@ static void expandVerifiedUsers(PatternRewriter &rewriter, Location loc,
                                 SmallVector<int64_t> totalInnerSizes,
                                 SmallVector<ReassociationIndices> reIndices,
                                 scf::ForallOp forallOp) {
-  // The user expands and producer collapses need to be
-  // unflattened e.g %collapsed = tensor.collapse_shape %transposed [[0, 1], [2,
-  // 3]] : tensor<8x16x8x16xf32> into tensor<128x128xf32> can be unflattened to
-  // %collapsed = tensor.collapse_shape %transposed [[0], [1], [2], [3]] :
-  // tensor<8x16x8x16xf32> into tensor<8x16x8x16xf32> and then is consumed by
-  // the expanded parallel_insert_slice_op.
-  SmallVector<ReassociationIndices> unFlattenReassociations;
-  for (ReassociationIndices inds : reIndices) {
-    for (int64_t i : inds) {
-      unFlattenReassociations.push_back({i});
-    }
-  }
   // compute the offsets,sizes,strides in the expanded dimensions.
   auto computeExpandedAccess = [&](ArrayRef<OpFoldResult> mixedOffsets,
                                    ShapedType resultType)
@@ -149,13 +137,10 @@ static void expandVerifiedUsers(PatternRewriter &rewriter, Location loc,
       RankedTensorType resultType = expandShapeOp.getResultType();
       auto [expandedOffsets, expandedSizes, expandedStrides] =
           computeExpandedAccess(extractSliceOp.getMixedOffsets(), resultType);
+      rewriter.setInsertionPoint(extractSliceOp);
       rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
           extractSliceOp, resultType, extractSliceOp.getSource(),
           expandedOffsets, expandedSizes, expandedStrides);
-      rewriter.setInsertionPoint(expandShapeOp);
-      rewriter.replaceOpWithNewOp<tensor::ExpandShapeOp>(
-          expandShapeOp, resultType, expandShapeOp.getSrc(),
-          unFlattenReassociations);
     } else if (auto parallelInsertOp =
                    dyn_cast<tensor::ParallelInsertSliceOp>(user)) {
       auto collapseShapeOp =
@@ -163,14 +148,9 @@ static void expandVerifiedUsers(PatternRewriter &rewriter, Location loc,
       RankedTensorType resultType = collapseShapeOp.getSrcType();
       auto [expandedOffsets, expandedSizes, expandedStrides] =
           computeExpandedAccess(parallelInsertOp.getMixedOffsets(), resultType);
-
-      rewriter.setInsertionPoint(collapseShapeOp);
-      auto newCollapseOp = rewriter.replaceOpWithNewOp<tensor::CollapseShapeOp>(
-          collapseShapeOp, collapseShapeOp.getSrcType(),
-          collapseShapeOp.getSrc(), unFlattenReassociations);
       rewriter.setInsertionPoint(parallelInsertOp);
       rewriter.replaceOpWithNewOp<tensor::ParallelInsertSliceOp>(
-          parallelInsertOp, newCollapseOp.getResult(),
+          parallelInsertOp, collapseShapeOp.getSrc(),
           parallelInsertOp.getDest(), expandedOffsets, expandedSizes,
           expandedStrides);
     }
