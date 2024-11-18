@@ -110,7 +110,7 @@ setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
 static std::optional<GPUMMASchedule>
 getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
                                    GPUMatmulShapeType problem,
-                                   bool transposedLhs, bool transposedRhs) {
+                                   bool transposedLhs, bool transposedRhs, bool mustBeAligned=true) {
   const int64_t targetSubgroupSize = target.getPreferredSubgroupSize();
   SmallVector<GPUMatmulShapeType> intrinsics;
   for (IREE::GPU::MMAAttr mma : target.getWgp().getMma()) {
@@ -151,15 +151,17 @@ getMmaScheduleFromProblemAndTarget(IREE::GPU::TargetAttr target,
 
   int64_t maxSharedMemoryBytes = target.getWgp().getMaxWorkgroupMemoryBytes();
 
+
+  
   // First try to find a schedule with an exactly matching intrinsic.
   std::optional<GPUMMASchedule> schedule =
       deduceMMASchedule(problem, intrinsics, seeds, maxSharedMemoryBytes,
-                        targetSubgroupSize, transposedLhs, transposedRhs);
+                        targetSubgroupSize, transposedLhs, transposedRhs, /*canUpcastAcc=*/false, /*mustBeAligned*/mustBeAligned);
   if (!schedule) {
     // Then try again by allowing upcasting accumulator.
     schedule = deduceMMASchedule(
         problem, intrinsics, seeds, maxSharedMemoryBytes, targetSubgroupSize,
-        transposedLhs, transposedRhs, /*canUpcastAcc=*/true);
+        transposedLhs, transposedRhs, /*canUpcastAcc=*/false, /*mustBeAligned*/mustBeAligned);
   }
   return schedule;
 }
@@ -237,8 +239,18 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
       nDims.back() !=
       llvm::cast<AffineDimExpr>(maps[1].getResults().back()).getPosition();
 
+  bool mustBeAligned = true;
   std::optional<GPUMMASchedule> schedule = getMmaScheduleFromProblemAndTarget(
       target, problem, transposedLhs, transposedRhs);
+
+  // TODO (nirvedhmeshram, jerryyin) : Support all GEMM types.
+  if(!schedule && !contractionDims.batch.empty()){
+    LDBG("Attempting to deduce unaligned TileAndFuse MMA schedulee");
+    mustBeAligned = false;
+  schedule = getMmaScheduleFromProblemAndTarget(
+      target, problem, transposedLhs, transposedRhs, mustBeAligned);
+  }
+
 
   if (!schedule) {
     LDBG("Failed to deduce TileAndFuse MMA schedule");
@@ -268,14 +280,6 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   for (int64_t k : llvm::drop_end(contractionDims.k)) {
     reductionTileSizes[k] = 1;
   }
-
-  // Adjust the inner bound size for packing to intrinsic shapes, since tiling
-  // happens after packing.
-  assert(bounds[mDims.back()] % schedule->mSize == 0 &&
-         bounds[nDims.back()] % schedule->nSize == 0 &&
-         "expected inner bound to be evenly divisible by schedule sizes.");
-  bounds[mDims.back()] /= schedule->mSize;
-  bounds[nDims.back()] /= schedule->nSize;
 
   // Compute the M/N dimension tile sizes by multiplying subgroup information.
   for (auto [i, mDim] : llvm::enumerate(mDims)) {
@@ -317,7 +321,21 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   attrs.emplace_back(StringAttr::get(context, "subgroup"),
                      b.getI64ArrayAttr(subgroupTileSizes));
   attrs.emplace_back(StringAttr::get(context, "mma_kind"), mmaKind);
-  GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  if(mustBeAligned) {
+    GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  }
+  else {
+    // TODO (nirvedhmeshram, Max191, jerryyin) Add support so that unaligned shapes do not
+    // require c promotion.
+    GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1, 2});
+    SmallVector<int64_t> paddingTileSizes = workgroupTileSizes;
+    int64_t innerKDim = contractionDims.k.back();
+    int64_t kPackFactor = std::get<2>(mmaKind.getMNKShape());
+    paddingTileSizes[innerKDim] =  reductionTileSizes[innerKDim]*kPackFactor;
+    attrs.emplace_back(StringAttr::get(context, "padding"),
+                     b.getI64ArrayAttr(paddingTileSizes));
+
+  }
   auto configDict = DictionaryAttr::get(context, attrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
   int64_t flatWorkgroupSize =

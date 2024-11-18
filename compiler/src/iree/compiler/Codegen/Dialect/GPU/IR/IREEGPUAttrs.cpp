@@ -2017,6 +2017,17 @@ void LoweringConfigAttr::setPromotedOperandList(
                      b.getI64ArrayAttr(operands));
 }
 
+constexpr StringLiteral kPaddingName = "padding";
+
+std::optional<SmallVector<int64_t>>
+LoweringConfigAttr::getPaddingList() const {
+  auto array = getAttributes().getAs<ArrayAttr>(kPaddingName);
+  if (!array) {
+    return std::nullopt;
+  }
+  return getIntegerVector(array);
+}
+
 //===----------------------------------------------------------------------===//
 // DerivedThreadConfigAttr
 //===----------------------------------------------------------------------===//

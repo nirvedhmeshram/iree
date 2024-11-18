@@ -80,6 +80,8 @@ def IREEGPU_LoweringConfigAttr :
     static void setPromotedOperandList(MLIRContext *context,
                                        SmallVectorImpl<NamedAttribute> &attrs,
                                        ArrayRef<int64_t> operands);
+    /// Helper to retrieve list of padding values to pad operands.
+    std::optional<SmallVector<int64_t>> getPaddingList() const;
   }];
 }
 
