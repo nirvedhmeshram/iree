@@ -8,8 +8,12 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -25,10 +29,72 @@ namespace mlir::iree_compiler {
 
 namespace {
 
+Value promoteValue(OpBuilder &builder, Location loc, Value v) {
+  auto tensorType = cast<RankedTensorType>(v.getType());
+  SmallVector<OpFoldResult> mixedSizes = tensor::getMixedSizes(builder, loc, v);
+  Value empty = builder.create<tensor::EmptyOp>(loc, mixedSizes,
+                                                tensorType.getElementType());
+  auto copy = builder.create<linalg::CopyOp>(loc, v, empty);
+  setLoweringConfig(
+      copy, IREE::GPU::DerivedThreadConfigAttr::get(builder.getContext()));
+  return copy.getResult(0);
+}
+
+
+void promoteResult(OpBuilder &builder, Operation *op, Value valToMakeShared) {
+  IRRewriter rewriter(builder);
+  Location loc = op->getLoc();
+   OpBuilder::InsertionGuard g(rewriter);
+   rewriter.setInsertionPointAfterValue(valToMakeShared);
+  tensor::ExtractSliceOp extractSliceOp;
+  SetVector<Operation*> opsToReplaceUseIn;
+  Value valueToReplace = valToMakeShared; 
+  for( auto user : valToMakeShared.getUsers()){
+   extractSliceOp = dyn_cast<tensor::ExtractSliceOp>(user);
+   if(extractSliceOp){
+    // If the result is consumed by an extrat_slice then we expect there to be exactly one extract slice that is then used by consumers.
+     if(!valToMakeShared.hasOneUse())
+       return;
+    valueToReplace = extractSliceOp.getResult();
+     for( auto user : extractSliceOp->getUsers()){
+      opsToReplaceUseIn.insert(user);
+     }
+     break;
+   }
+   opsToReplaceUseIn.insert(user);
+  }
+    auto tensorType = cast<RankedTensorType>(valToMakeShared.getType());
+    SmallVector<Value> dynamicSizes;
+    for (auto [idx, size] : llvm::enumerate(tensorType.getShape())) {
+      if (ShapedType::isDynamic(size)) {
+        dynamicSizes.push_back(
+            rewriter.create<tensor::DimOp>(loc, valToMakeShared, idx));
+      }
+    }
+    Attribute addressSpace = gpu::AddressSpaceAttr::get(
+        rewriter.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
+    auto alloc = rewriter.create<bufferization::AllocTensorOp>(loc, tensorType,
+                                                               dynamicSizes);
+    alloc.setMemorySpaceAttr(addressSpace);
+    auto copy =
+        rewriter.create<linalg::CopyOp>(loc, valToMakeShared, alloc.getResult());
+  //rewriter.replaceAllUsesExcept(valToMakeShared, copy.getResult(0), copy);
+  Value replacement = copy.getResult(0);
+   if(extractSliceOp){
+     extractSliceOp.getSourceMutable().assign(replacement); 
+     replacement = valueToReplace;
+   }
+   rewriter.setInsertionPointAfterValue(replacement);
+   replacement = promoteValue(rewriter, loc, replacement);
+    valueToReplace.replaceUsesWithIf(replacement, [&](OpOperand &use) {
+      return  opsToReplaceUseIn.contains(use.getOwner());
+    });
+}
+
 /// Inserts a `linalg.copy` directly before the given operation on the
 /// specified operand, for example with operand index = 1:
 ///
-///   linalg.matmul ins(%0, %1)
+///   %2 = linalg.matmul ins(%0, %1)
 ///
 /// becomes
 ///
@@ -40,9 +106,19 @@ namespace {
 /// If the producer is already a tilable op, the producer is just annotated with
 /// #iree_gpu.derived_thread_config to indicate that it should be distributed
 /// to threads independently of the matmul.
+/// Additionally (TODO: finish description of result promotion before submitting PR)
 void promoteOperand(OpBuilder &builder, Operation *op, unsigned index) {
-  Value operand = op->getOperand(index);
-
+  auto dpsOp = dyn_cast<DestinationStyleOpInterface>(op);
+  if(!dpsOp)
+    return;
+  // We use the convention that if we are passing an index beyond the inputs then we promote the
+  // result of the corresponding dps init.
+   if(index>=dpsOp.getNumDpsInputs()){
+      index -= dpsOp.getNumDpsInputs();
+      assert(index<op->getNumResults() && "trying to promote out of bound result index");
+      return promoteResult(builder, op, op->getResult(index));
+   }
+   Value operand = op->getOperand(index);
   if (auto producer = operand.getDefiningOp<TilingInterface>()) {
     // Skip promotion of fills.
     if (isa<linalg::FillOp>(producer)) {
@@ -68,15 +144,9 @@ void promoteOperand(OpBuilder &builder, Operation *op, unsigned index) {
   if (!tensorType) {
     return;
   }
-
-  SmallVector<OpFoldResult> mixedSizes =
-      tensor::getMixedSizes(builder, op->getLoc(), operand);
-  Value empty = builder.create<tensor::EmptyOp>(op->getLoc(), mixedSizes,
-                                                tensorType.getElementType());
-  auto copy = builder.create<linalg::CopyOp>(op->getLoc(), operand, empty);
-  setLoweringConfig(
-      copy, IREE::GPU::DerivedThreadConfigAttr::get(builder.getContext()));
-  op->setOperand(index, copy.getResult(0));
+  builder.setInsertionPointAfterValue(operand);
+  auto replacement = promoteValue(builder, op->getLoc(), operand);
+  op->setOperand(index, replacement);
 }
 
 struct GPUPromoteMatmulOperandsPass final
