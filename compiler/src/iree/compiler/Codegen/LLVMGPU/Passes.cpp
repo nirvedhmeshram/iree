@@ -445,6 +445,9 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
   // Step 7. Bufferize.
   addGPUBufferizePasses(funcPassManager);
 
+  // Step 7.5. Handle dynamic alloca ops.
+  funcPassManager.addPass(createLLVMGPUDynamicToStaticAllocaPass());
+
   // Step 8. Resolve remaining parallel loops.
   funcPassManager.addPass(iree_compiler::createNormalizeLoopBoundsPass(
       NormalizeLoopBoundsPassOptions{/*normalizeFor=*/false,
