@@ -48,6 +48,11 @@ def LLVMGPUCastAddressSpaceFunctionPass :
   let summary = "Cast address space to generic in CallOp and FuncOp";
 }
 
+def LLVMGPUDynamicToStaticAllocaPass :
+    InterfacePass<"iree-llvmgpu-dynamic-to-static-alloca", "mlir::FunctionOpInterface"> {
+  let summary = "Replace dynamic memref.alloca with subviews of static allocas";
+}
+
 def LLVMGPUCastTypeToFitMMAPass : InterfacePass<"iree-llvmgpu-cast-type-to-fit-mma",
                                                 "mlir::FunctionOpInterface"> {
   let summary = "Perform type extension/truncation over vector.contract types "
