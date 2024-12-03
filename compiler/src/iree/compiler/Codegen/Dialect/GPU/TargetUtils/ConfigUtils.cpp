@@ -252,7 +252,7 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   // the GEMM is accumulating (i.e doesnt have a zero fill dpsInit) as that
   // buffer currently gets materialized as private memory. We need to add
   // missing patterns to fix that.
-  if (!schedule && !contractionDims.batch.empty() && !hasFusedLeadingOp) {
+  if (!schedule) {
     LDBG("Attempting to deduce unaligned TileAndFuse MMA schedulee");
     mustBeAligned = false;
     doCPromotion = true;
