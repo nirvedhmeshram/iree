@@ -43,7 +43,7 @@ struct GPUApplyTilingLevelPass final
 
 /// Pattern to convert `tensor.extract_slice(tensor.expand_shape)` to
 /// `tensor.expand_shape(tensor.extract_slice)`.
-LogicalResult swapExpandShapeWithSlice(RewriterBase &rewriter,
+static LogicalResult swapExpandShapeWithSlice(RewriterBase &rewriter,
                                        tensor::ExpandShapeOp expandShapeOp,
                                        tensor::ExtractSliceOp sliceOp) {
 

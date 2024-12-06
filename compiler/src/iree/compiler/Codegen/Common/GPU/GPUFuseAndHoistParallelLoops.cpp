@@ -44,6 +44,112 @@ struct GPUFuseAndHoistParallelLoopsPass final
 };
 } // namespace
 
+/// Pattern to convert `tensor.extract_slice(tensor.expand_shape)` to
+/// `tensor.expand_shape(tensor.extract_slice)`.
+static LogicalResult swapExpandShapeWithSlice(RewriterBase &rewriter,
+                                       tensor::ExpandShapeOp expandShapeOp,
+                                       tensor::ExtractSliceOp sliceOp) {
+
+  //lvm::outs()<<"in this pattern"
+
+  SmallVector<OpFoldResult> offsets = sliceOp.getMixedOffsets();
+  SmallVector<OpFoldResult> sizes = sliceOp.getMixedSizes();
+
+  // Helper variables and function for accumulating the new offset and length
+  // values.
+  Location loc = expandShapeOp->getLoc();
+  AffineExpr d0, d1, d2;
+  bindDims(rewriter.getContext(), d0, d1, d2);
+  // Multiply two integers.
+  auto mul = [&](OpFoldResult v1, OpFoldResult v2) {
+    auto mulMap = AffineMap::get(2, 0, {d0 * d1});
+    return affine::makeComposedFoldedAffineApply(rewriter, loc, mulMap,
+                                                 {v1, v2});
+  };
+  auto mulAdd = [&](OpFoldResult v1, OpFoldResult v2, OpFoldResult v3) {
+    auto mulMap = AffineMap::get(3, 0, {d0 * d1 + d2});
+    return affine::makeComposedFoldedAffineApply(rewriter, loc, mulMap,
+                                                 {v1, v2, v3});
+  };
+
+  SmallVector<OpFoldResult> outputShape =
+      getMixedValues(expandShapeOp.getStaticOutputShape(),
+                     expandShapeOp.getOutputShape(), rewriter);
+
+  // Compute new offsets, lengths, and strides.
+  SmallVector<OpFoldResult> newOffsets, newLengths, newStrides;
+
+  auto isZeroOffsetAndFullSize = [](OpFoldResult offset, OpFoldResult sliceSize,
+                                    OpFoldResult size) {
+    if (!isConstantIntValue(offset, 0))
+      return false;
+    FailureOr<bool> maybeEqual =
+        ValueBoundsConstraintSet::areEqual(sliceSize, size);
+    return llvm::succeeded(maybeEqual) && maybeEqual.value();
+  };
+
+  for (const ReassociationIndices &indices :
+       expandShapeOp.getReassociationIndices()) {
+    OpFoldResult newOffset = rewriter.getIndexAttr(0);
+    OpFoldResult newSize = rewriter.getIndexAttr(1);
+
+    int64_t i = 0;
+    int64_t e = indices.size();
+    for (; i < e; ++i) {
+      int64_t expandedDim = indices[i];
+      if (!isConstantIntValue(sizes[expandedDim], 1))
+        break;
+
+      newOffset =
+          mulAdd(newOffset, outputShape[expandedDim], offsets[expandedDim]);
+    }
+
+    if (i != e) {
+      int64_t expandedDim = indices[i];
+      newOffset =
+          mulAdd(newOffset, outputShape[expandedDim], offsets[expandedDim]);
+      newSize = sizes[expandedDim];
+      i++;
+    }
+
+    for (; i < e; ++i) {
+      int64_t expandedDim = indices[i];
+      OpFoldResult offset = offsets[expandedDim];
+      OpFoldResult fullSize = outputShape[expandedDim];
+      if (!isZeroOffsetAndFullSize(offset, sizes[expandedDim], fullSize)) {
+        llvm::errs() << "failed! " << offset << " " << sizes[expandedDim] << " "
+                     << fullSize << "\n";
+        return failure();
+      }
+
+      newOffset = mul(newOffset, fullSize);
+      newSize = mul(newSize, fullSize);
+    }
+
+    newOffsets.push_back(newOffset);
+    newLengths.push_back(newSize);
+
+    // Only unit stride supported.
+    newStrides.push_back(rewriter.getIndexAttr(1));
+  }
+
+  // The shape of the result can be obtained from the sizes passed in.
+  SmallVector<Value> dynDims;
+  SmallVector<int64_t> shape;
+  dispatchIndexOpFoldResults(sizes, dynDims, shape);
+  RankedTensorType resultType = RankedTensorType::get(
+      shape, expandShapeOp.getResultType().getElementType());
+
+  // Create a new ExtractSliceOp and ExpandShapeOp.
+  Value newSliceOp = rewriter.create<tensor::ExtractSliceOp>(
+      loc, expandShapeOp.getSrc(), newOffsets, newLengths, newStrides);
+  auto newExpandShapeOp = rewriter.create<tensor::ExpandShapeOp>(
+      loc, resultType, newSliceOp, expandShapeOp.getReassociationIndices(),
+      sizes);
+  rewriter.replaceOp(sliceOp, newExpandShapeOp);
+  return success();
+}
+
 static std::optional<int64_t> getStaticForallTripCount(scf::ForallOp forall) {
   // TODO: Handle non-normalized loops.
   if (!forall.isNormalized()) {
@@ -325,6 +431,28 @@ struct FuseTilableForallConsumers final
   }
 };
 
+/// tensor.empty does not define any tensor contents, so an unpadded pack
+/// can be folded away.
+struct SwapExpandShapeWithSlicePattern
+    : public OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern<tensor::ExtractSliceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+    auto expandOp = sliceOp.getSource().getDefiningOp<tensor::ExpandShapeOp>();
+    if (!expandOp) {
+      return failure();
+    }
+
+    if (!sliceOp.hasUnitStride()) {
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "unsupported: non-unit stride");
+    }
+
+    return swapExpandShapeWithSlice(rewriter, expandOp, sliceOp);
+  }
+};
+
 void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
   MLIRContext *context = &getContext();
 
@@ -385,6 +513,7 @@ void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
     patterns.add<FuseTilableSliceProducers>(context);
     tensor::populateFoldTensorEmptyPatterns(patterns);
     scf::ForallOp::getCanonicalizationPatterns(patterns, context);
+    patterns.add<SwapExpandShapeWithSlicePattern>(context);
     if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
