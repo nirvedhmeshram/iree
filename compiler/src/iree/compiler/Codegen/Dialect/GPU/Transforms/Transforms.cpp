@@ -381,6 +381,9 @@ convertContractionToMultiMma(RewriterBase &rewriter, linalg::LinalgOp linalgOp,
     return failure();
   }
 
+  llvm::outs() << "survied basics\n";
+  llvm::outs().flush();
+
   MLIRContext *context = rewriter.getContext();
 
   int64_t innerM = contractionDims.m.back();
@@ -442,9 +445,25 @@ convertContractionToMultiMma(RewriterBase &rewriter, linalg::LinalgOp linalgOp,
   if (cast<RankedTensorType>(inputs[0].getType()).getElementType() !=
           lhsElementType ||
       cast<RankedTensorType>(inputs[1].getType()).getElementType() !=
-          rhsElementType ||
+          rhsElementType /*||
       cast<RankedTensorType>(inputs[2].getType()).getElementType() !=
-          accElementType) {
+          accElementType*/) {
+    return failure();
+  }
+
+  bool needCasting = false;
+  auto inputAccType = cast<RankedTensorType>(inputs[2].getType());
+  auto inputAccElementType = inputAccType.getElementType();
+  int64_t inputAccBitWidth = inputAccElementType.getIntOrFloatBitWidth();
+  int64_t intrinsicAccBitWith = accElementType.getIntOrFloatBitWidth();
+
+  if (inputAccBitWidth > intrinsicAccBitWith)
+    return failure();
+  if (inputAccBitWidth < intrinsicAccBitWith)
+    needCasting = true;
+
+  if (needCasting && (!isa<FloatType>(inputAccElementType) ||
+                      !isa<FloatType>(accElementType))) {
     return failure();
   }
 
@@ -488,10 +507,22 @@ convertContractionToMultiMma(RewriterBase &rewriter, linalg::LinalgOp linalgOp,
   IREE::Codegen::LoweringConfigAttrInterface maybeLoweringConfig =
       getLoweringConfig(linalgOp);
 
-  auto newMmaOp = rewriter.replaceOpWithNewOp<IREE::GPU::MultiMmaOp>(
-      linalgOp, inputs[0], inputs[1], inputs[2],
+  if (needCasting) {
+    inputs[2] = rewriter.create<arith::ExtFOp>(
+        linalgOp->getLoc(),
+        RankedTensorType::get(inputAccType.getShape(), accElementType),
+        inputs[2]);
+  }
+  auto newMmaOp = rewriter.create<IREE::GPU::MultiMmaOp>(
+      linalgOp->getLoc(), inputs[0], inputs[1], inputs[2],
       ArrayRef<AffineMap>{outerLhsMap, outerRhsMap, outerAccMap}, iteratorTypes,
       mmaKind, lhsPerm, rhsPerm, accPerm);
+  if (needCasting) {
+    rewriter.replaceOpWithNewOp<arith::TruncFOp>(linalgOp, inputAccType,
+                                                 newMmaOp.getResult());
+  } else {
+    rewriter.replaceOp(linalgOp, newMmaOp);
+  }
   if (maybeLoweringConfig) {
     setLoweringConfig(newMmaOp, maybeLoweringConfig);
   }
