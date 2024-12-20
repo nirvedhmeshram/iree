@@ -194,10 +194,9 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
     return failure();
   }
 
-  // TODO(Max191): add dynamic shape support for inner most dims.
-  if (ShapedType::isDynamic(bounds[contractionDims.m.back()]) ||
-      ShapedType::isDynamic(bounds[contractionDims.n.back()]) ||
-      ShapedType::isDynamic(bounds[contractionDims.k.back()])) {
+  // TODO(nirvedhmeshram): We cannot support dynamic inner k but other dims can
+  // be supported with padding.
+  if (ShapedType::isDynamic(bounds[contractionDims.k.back()])) {
     return failure();
   }
 
@@ -206,14 +205,10 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   // computing an MMA schedule.
   SmallVector<int64_t> mDims, nDims, kDims;
   for (auto mDim : contractionDims.m) {
-    if (!ShapedType::isDynamic(bounds[mDim])) {
-      mDims.push_back(mDim);
-    }
+    mDims.push_back(mDim);
   }
   for (auto nDim : contractionDims.n) {
-    if (!ShapedType::isDynamic(bounds[nDim])) {
-      nDims.push_back(nDim);
-    }
+    nDims.push_back(nDim);
   }
   for (auto kDim : contractionDims.k) {
     if (!ShapedType::isDynamic(bounds[kDim])) {
@@ -222,7 +217,11 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
   }
 
   auto getDimBounds = [&](SmallVector<int64_t> dims) -> SmallVector<int64_t> {
-    return llvm::map_to_vector(dims, [&](int64_t dim) { return bounds[dim]; });
+    // We dont know dynamic bounds so conservatively call them unit (we will
+    // choose unaligned schedule that way).
+    return llvm::map_to_vector(dims, [&](int64_t dim) {
+      return ShapedType::isDynamic(bounds[dim]) ? 1 : bounds[dim];
+    });
   };
 
   assert(operands.size() == 3 && "expected 3 operands");
@@ -344,6 +343,11 @@ getMatmulLoweringConfigAndWorkgroupSize(SmallVector<int64_t> bounds,
     int64_t innerKDim = contractionDims.k.back();
     int64_t kPackFactor = std::get<2>(mmaKind.getMNKShape());
     paddingTileSizes[innerKDim] = reductionTileSizes[innerKDim] * kPackFactor;
+    for (auto &tileSize : paddingTileSizes) {
+      if (tileSize == 0) {
+        tileSize = 1;
+      }
+    }
     attrs.emplace_back(StringAttr::get(context, "padding"),
                        b.getI64ArrayAttr(paddingTileSizes));
   }
