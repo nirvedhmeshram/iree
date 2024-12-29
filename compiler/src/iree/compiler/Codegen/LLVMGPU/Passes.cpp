@@ -432,6 +432,7 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
   }
 
   // Step 5. Greedily fuse parallel loops and hoist from serial loops.
+  funcPassManager.addPass(createEliminateEmptyTensorsPass());
   funcPassManager.addPass(createGPUFuseAndHoistParallelLoopsPass());
   funcPassManager.addPass(createGPUGreedilyDistributeToThreadsPass());
   funcPassManager.addPass(createTileLargeTensorsPass());

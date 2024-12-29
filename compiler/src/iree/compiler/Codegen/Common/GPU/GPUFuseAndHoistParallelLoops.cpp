@@ -173,6 +173,55 @@ struct FuseTilableDestinationProducers final : OpRewritePattern<scf::ForallOp> {
   }
 };
 
+static bool isLaneMappableForall(scf::ForallOp forallOp) {
+  if (!forallOp.getMapping().has_value())
+    return false;
+  Attribute mapping = *forallOp.getMapping()->getValue().begin();
+  if (mapping != IREE::GPU::LaneIdAttr::get(forallOp.getContext(), 0)) {
+    return false;
+  }
+  return true;
+}
+struct FuseExternalSlice final : OpRewritePattern<scf::ForallOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(scf::ForallOp forallOp,
+                                PatternRewriter &rewriter) const override {
+    if (!isLaneMappableForall(forallOp)) {
+      return failure();
+    }
+    llvm::outs() << "Working on\n";
+    llvm::outs().flush();
+    forallOp->dump();
+    SmallVector<tensor::ExtractSliceOp> candidates;
+    forallOp->walk([&](tensor::ExtractSliceOp extractSliceOp) {
+      auto producer = extractSliceOp.getSource().getDefiningOp();
+      if (producer && producer->getBlock() != forallOp.getBody()) {
+        llvm::outs() << "Following candidate is discoved: ";
+        llvm::outs().flush();
+        extractSliceOp->dump();
+        candidates.push_back(extractSliceOp);
+      }
+    });
+    if (candidates.size() < 3) {
+      llvm::outs() << "returning for hacky reasons";
+      llvm::outs().flush();
+      return failure();
+    }
+    llvm::outs() << "Lets mess with this candidate";
+    llvm::outs().flush();
+    candidates[candidates.size() - 1]->dump();
+    auto sliceToReplace = candidates[candidates.size() - 1];
+    Value forallInit = forallOp.getRegionIterArgs()[0];
+    forallInit.dump();
+    rewriter.setInsertionPoint(sliceToReplace);
+    rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(
+        sliceToReplace, forallInit, sliceToReplace.getMixedOffsets(),
+        sliceToReplace.getMixedSizes(), sliceToReplace.getMixedStrides());
+
+    return success();
+  }
+};
+
 struct FuseUnitLoopDestination final : OpRewritePattern<scf::ForallOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::ForallOp forallOp,
@@ -421,6 +470,7 @@ void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
     RewritePatternSet patterns(context);
     patterns.add<FuseTilableDestinationProducers>(context);
     patterns.add<FuseTilableSliceProducers>(context);
+    patterns.add<FuseExternalSlice>(context);
     tensor::populateFoldTensorEmptyPatterns(patterns);
     scf::ForallOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
