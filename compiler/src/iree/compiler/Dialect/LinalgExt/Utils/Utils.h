@@ -160,6 +160,16 @@ FailureOr<SmallVector<int64_t>> getIGEMMLoopBounds(linalg::LinalgOp linalgOp);
 /// layout, the order can be different (e.g., NCHW has the lhs and rhs swapped).
 FailureOr<SmallVector<Value>> getIGEMMOperands(linalg::LinalgOp linalgOp);
 
+/// Struct that holds inferred IGEMM details for a conv op
+struct IGEMMGenericConvDetails {
+   SmallVector<AffineMap> igemmContractionMaps;
+   SmallVector<int64_t> igemmLoopBounds;
+   SmallVector<Value> igemmOperands;
+};
+
+/// Infer IGEMM details for a giveb conv op.
+FailureOr<IGEMMGenericConvDetails> igemmGenericConvDetails(linalg::LinalgOp linalgOp);
+
 /// Returns true if the operation increases bitwidths of tensors.
 /// This function checks that the genericOp:
 /// 1. Has only one output.

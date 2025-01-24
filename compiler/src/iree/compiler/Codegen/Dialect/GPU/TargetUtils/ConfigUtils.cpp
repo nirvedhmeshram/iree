@@ -30,6 +30,14 @@
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::iree_compiler::IREE::GPU {
+// TODO (nirvedhmeshram) : Using this flag lets wider range of convolutions
+// go through the IGEMM path which we need to confirm the path can support
+// after which we can drop this flag and always use the IGEMM path.
+llvm::cl::opt<bool> clGPUUseTileAndFuseGenericConvolution(
+    "iree-gpu-use-tile-and-fuse-generic-convolution",
+    llvm::cl::desc(
+        "enable the tile and fuse pipeline for generic convolutions"),
+    llvm::cl::init(false));
 
 constexpr int64_t kCacheLineSizeBits = 128 * 8;
 constexpr int64_t kPreferredCopyNumBits = 128;
@@ -370,6 +378,16 @@ setIGEMMConvolutionLoweringConfig(IREE::GPU::TargetAttr target,
       LinalgExt::getIGEMMLoopBounds(linalgOp);
   FailureOr<SmallVector<Value>> igemmOperands =
       LinalgExt::getIGEMMOperands(linalgOp);
+
+  if (failed(igemmContractionMaps) || failed(igemmLoopBounds) ||
+      failed(igemmOperands)) {
+    // Try generic IGEMM conversion
+    if (clGPUUseTileAndFuseGenericConvolution) {
+      FailureOr<IGEMMGenericConvDetails> igemmGenericConvDetails =
+          LinalgExt::getIGEMMGenericConvDetails(linalgOp);
+    }
+    return failure();
+  }
   if (failed(igemmContractionMaps) || failed(igemmLoopBounds) ||
       failed(igemmOperands)) {
     LDBG("Unsupported convolution type");
