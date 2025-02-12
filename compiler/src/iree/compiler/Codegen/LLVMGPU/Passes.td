@@ -96,6 +96,12 @@ def LLVMGPUSelectLoweringStrategyPass :
   let summary = "Select a IREE::HAL::DispatchLoweringPassPipeline for lowering the target variant";
 }
 
+def LLVMGPUSpecializeUnalignedMatmulPass :
+    Pass<"iree-llvmgpu-specialize-unaligned-matmul", "ModuleOp"> {
+  let summary = "Pass for unaligned case to specialize so that inner workgroups perform" 
+    "aligned computation while only the edge workgroups handle unaligned computation";
+}
+
 def LLVMGPUTensorCoreVectorizationPass :
     InterfacePass<"iree-llvmgpu-tensorcore-vectorization", "mlir::FunctionOpInterface"> {
   let summary = "Pass to convert linalg into Vector and transform it to a form that can be lowered to GPU MMA ops";

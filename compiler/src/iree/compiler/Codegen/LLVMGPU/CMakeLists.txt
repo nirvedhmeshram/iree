@@ -85,6 +85,7 @@ iree_cc_library(
     "LLVMGPUPrefetching.cpp"
     "LLVMGPUPromoteMatmulToFitMMA.cpp"
     "LLVMGPUSelectLoweringStrategy.cpp"
+    "LLVMGPUSpecializeUnalignedMatmul.cpp"
     "LLVMGPUTensorCoreVectorization.cpp"
     "LLVMGPUTensorPad.cpp"
     "LLVMGPUTileAndDistribute.cpp"

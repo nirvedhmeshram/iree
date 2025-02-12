@@ -1169,6 +1169,8 @@ static void buildLLVMGPUCodegenConfigurationPassPipelineImpl(
   modulePassManager.addPass(createMaterializeTuningSpecsPass());
   modulePassManager.addPass(createMaterializeUserConfigsPass());
   modulePassManager.addPass(createLLVMGPUSelectLoweringStrategyPass());
+  modulePassManager.addPass(createLLVMGPUSpecializeUnalignedMatmulPass());
+
 }
 
 void buildLLVMGPUCodegenConfigurationPassPipeline(
