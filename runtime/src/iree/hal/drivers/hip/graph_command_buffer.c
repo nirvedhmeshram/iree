@@ -832,6 +832,7 @@ static iree_status_t iree_hal_hip_graph_command_buffer_dispatch(
           command_buffer->hip_graph, &command_buffer->hip_barrier_node,
           dependency_count, &params),
       "hipGraphAddKernelNode");
+  printf("Here in graph\n");
 
   IREE_HIP_GRAPH_COMMAND_BUFFER_TRACE_ZONE_END(
       command_buffer, IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);

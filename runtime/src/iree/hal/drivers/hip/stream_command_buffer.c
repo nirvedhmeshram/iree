@@ -571,7 +571,20 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch(
     *((uint32_t*)params_ptr[kernel_params->binding_count + i]) =
         ((const uint32_t*)constants.data)[i];
   }
-
+  hipEvent_t sync, start, stop;
+  float milliseconds = 0;
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols, hipEventCreate(&start),
+                          "hip_symbols");
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols, hipEventCreate(&stop),
+                          "hip_symbols");
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols, hipEventCreate(&sync),
+                          "hip_symbols");
+  // Synchronize to ensure kernel execution is finished
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols,
+    hipEventSynchronize(sync), "hipEventSynchronize");
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols,
+                          hipEventRecord(start, command_buffer->hip_stream),
+                          "hipEventRecord");
   iree_status_t status = IREE_HIP_CALL_TO_STATUS(
       command_buffer->hip_symbols,
       hipModuleLaunchKernel(
@@ -581,6 +594,18 @@ static iree_status_t iree_hal_hip_stream_command_buffer_dispatch(
           kernel_params->block_shared_memory_size, command_buffer->hip_stream,
           params_ptr, NULL),
       "hipModuleLaunchKernel");
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols,
+                          hipEventRecord(stop, command_buffer->hip_stream),
+                          "hipEventRecord");
+
+  // Synchronize to ensure kernel execution is finished
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols,
+                          hipEventSynchronize(stop), "hipEventSynchronize");
+
+  IREE_HIP_CALL_TO_STATUS(command_buffer->hip_symbols,
+                          hipEventElapsedTime(&milliseconds, start, stop),
+                          "hipEventElapsedTime");
+  printf("Kernel execution time (ms): %.3f \n", milliseconds);
 
   IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
                                  &command_buffer->tracing_event_list,
