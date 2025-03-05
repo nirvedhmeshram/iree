@@ -229,7 +229,7 @@ static void tileAndBufferize(OpPassManager &funcPassManager) {
 static void addGPUVectorizationPasses(OpPassManager &funcPassManager,
                                       bool vectorizeCopies = true) {
   funcPassManager.addPass(createDecomposeConvolutionToLowerDimOpsPass());
-  funcPassManager.addPass(IREE::LinalgExt::createDecomposeIm2colPass());
+  funcPassManager.addPass(createGPUFuseAndHoistParallelLoopsPass());
   funcPassManager.addPass(
       IREE::VectorExt::createVectorizeIREEVectorExtOpsPass());
   // Vectorize.
@@ -445,7 +445,7 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
   }
 
   // Step 5. Greedily fuse parallel loops and hoist from serial loops.
-  funcPassManager.addPass(createGPUFuseAndHoistParallelLoopsPass());
+  funcPassManager.addPass(IREE::LinalgExt::createDecomposeIm2colPass());
   funcPassManager.addPass(createGPUGreedilyDistributeToThreadsPass());
   funcPassManager.addPass(createTileLargeTensorsPass());
   funcPassManager.addPass(createCanonicalizerPass());
