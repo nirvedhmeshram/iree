@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 
+#include <algorithm>
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -444,6 +445,7 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
   auto filterShape = filterType.getShape();
   auto outputShape = outputType.getShape();
   auto indexingMaps = linalgOp.getIndexingMapsArray();
+  auto inputMap = indexingMaps[0];
   auto filterMap = indexingMaps[1];
   auto outputMap = indexingMaps[2];
 
@@ -477,7 +479,7 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
     if (batchFirstDim && outputChannelLastDim.value() < batchFirstDim.value())
       isBatchDimLast = true;
   }
-  SmallVector<int64_t> filterkPos;
+  SmallVector<int64_t> filterkPos, filterkPos2, transposePermutation;
   for (auto reductionDim : reductionDims) {
     std::optional<int64_t> maybeDim = filterMap.getResultPosition(
         getAffineDimExpr(reductionDim, filterMap.getContext()));
@@ -487,6 +489,64 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
   // First we want to sort the dims as the look up from the filterMap
   // can place the dims in arbitarty order.
   std::sort(filterkPos.begin(), filterkPos.end());
+
+  SmallVector<int64_t> inputkPos;
+
+  // The input map is expected to have the same ordering for reduction
+  // dimensions as the filterMap as current im2col transformation implictly
+  // assumes that
+  // int64_t currInputReductionDim = -1;
+  for (int64_t pos : filterkPos) {
+    LDBG(pos);
+    LDBG(filterMap.getResult(pos));
+    LDBG(cast<AffineDimExpr>(filterMap.getResult(pos)).getPosition());
+    int64_t fPos = cast<AffineDimExpr>(filterMap.getResult(pos)).getPosition();
+    int64_t nextInputReductionDim = 0;
+    for (auto [idx, e] : llvm::enumerate(inputMap.getResults())) {
+      if (e.isFunctionOfDim(fPos)) {
+        nextInputReductionDim = idx;
+      }
+    }
+    if (!inputkPos.empty() && nextInputReductionDim < inputkPos.back()) {
+      int64_t insertIndex = 0;
+      for (int64_t ikPos : inputkPos) {
+        if (nextInputReductionDim > ikPos) {
+          insertIndex++;
+        } else {
+          break;
+        }
+      }
+      filterkPos2.insert(filterkPos2.begin() + insertIndex, pos);
+      LDBG("Input and filter reduction dims expected in same order");
+
+      // return failure();
+    } else {
+      filterkPos2.push_back(pos);
+    }
+    inputkPos.push_back(nextInputReductionDim);
+    // currInputReductionDim= nextInputReductionDim;
+  }
+  int64_t currIndex = 0;
+  for (int64_t i = 0; i < filterShape.size(); i++) {
+    if (currIndex < filterkPos.size() && i == filterkPos[currIndex]) {
+      transposePermutation.push_back(filterkPos2[currIndex]);
+      currIndex++;
+    } else {
+      transposePermutation.push_back(i);
+    }
+  }
+  LLVM_DEBUG({
+    llvm::dbgs() << "\nfilter kpos: ";
+    llvm::interleaveComma(filterkPos, llvm::dbgs());
+    llvm::dbgs() << "\ninput kpos: ";
+    llvm::interleaveComma(inputkPos, llvm::dbgs());
+    llvm::dbgs() << "\nfilter kpos2: ";
+    llvm::interleaveComma(filterkPos2, llvm::dbgs());
+    llvm::dbgs() << "\ntransposePermutation: ";
+    llvm::interleaveComma(transposePermutation, llvm::dbgs());
+    llvm::dbgs() << "\n";
+  });
+
   SmallVector<ReassociationIndices> collapsedFilterReductionDim;
   int64_t prevFilterIndex = filterkPos[0];
   int64_t currCollapsedIndex = 0;
@@ -596,6 +656,7 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
   }
   indexingGEMMMaps.push_back(resultMap);
   IGEMMGenericConvDetails igemmDetails;
+  igemmDetails.transposePermuations = transposePermutation;
   igemmDetails.igemmContractionMaps = indexingGEMMMaps;
   igemmDetails.igemmOperands = isOutputChannelFirst
                                    ? SmallVector<Value>({filter, input})

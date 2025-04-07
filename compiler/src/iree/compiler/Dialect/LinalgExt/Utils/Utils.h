@@ -170,6 +170,10 @@ struct IGEMMGenericConvDetails {
   /// Indicates if the OutputChannel is before the OutputImage in the output.
   /// This determines our lhs/rhs ordering.
   bool isOutputChannelFirst;
+  /// if the filter reduction dims are transposed we need to store the mapping
+  /// of
+  // this transposition so that it can be later materialized when doing im2col.
+  SmallVector<int64_t> transposePermuations;
 };
 
 /// Populate `IGEMMGenericConvDetails` for a given convolution operation.

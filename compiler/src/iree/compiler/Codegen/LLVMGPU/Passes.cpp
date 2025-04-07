@@ -364,6 +364,8 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
                                    const GPUPipelineOptions &pipelineOptions) {
   if (pipelineOptions.useIgemmConvolution) {
     funcPassManager.addPass(createConvolutionToIGEMMPass());
+    funcPassManager.addPass(createLinalgGeneralizeNamedOpsPass());
+    funcPassManager.addPass(createConvolutionToIGEMMPass());
   }
   // TODO (nirvedhmeshram) : Can remove this pass after
   // https://github.com/iree-org/iree/issues/19546 is fixed.

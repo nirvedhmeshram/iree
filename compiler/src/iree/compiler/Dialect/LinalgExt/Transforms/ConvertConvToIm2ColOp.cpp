@@ -129,7 +129,8 @@ public:
     SmallVector<int64_t> igemmLoopBounds = igemmConvDetails.igemmLoopBounds;
     SmallVector<utils::IteratorType> igemmLoopIterators =
         igemmConvDetails.igemmLoopIterators;
-
+    SmallVector<int64_t> transposePermuations =
+        igemmConvDetails.transposePermuations;
     Value input = linalgOp.getDpsInputs()[0];
     Value filter = linalgOp.getDpsInputs()[1];
     Value output = linalgOp.getDpsInits()[0];
@@ -214,6 +215,10 @@ public:
     auto loc = linalgOp.getLoc();
     Value colTensor = rewriter.create<tensor::EmptyOp>(
         loc, colTensorShape, inputType.getElementType());
+
+    // TODO : reorder `filterShape` in transposed order.
+    Value emptyFilter = rewriter.create<tensor::EmptyOp>(
+        loc, filterShape, inputType.getElementType());
     Value img2ColTensor =
         rewriter
             .create<IREE::LinalgExt::Im2colOp>(
@@ -221,9 +226,14 @@ public:
                 convDims.dilations, kernelSizes, mOffset, mBasis, kOffset,
                 kBasis, batchPos, mPos, kPos)
             .getResult(0);
+    Value transposeFilter =
+        rewriter
+            .create<linalg::TransposeOp>(loc, filter, emptyFilter,
+                                         transposePermuations)
+            ->getResult(0);
 
     Value reshapedFilter = rewriter.create<tensor::CollapseShapeOp>(
-        loc, filter, filterReassocIndices);
+        loc, transposeFilter, filterReassocIndices);
 
     auto genericGEMMOp = rewriter.create<linalg::GenericOp>(
         loc, outputType,
