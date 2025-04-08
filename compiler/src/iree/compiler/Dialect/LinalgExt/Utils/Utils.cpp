@@ -548,18 +548,18 @@ getIGEMMGenericConvDetails(linalg::LinalgOp linalgOp) {
   });
 
   SmallVector<ReassociationIndices> collapsedFilterReductionDim;
-  int64_t prevFilterIndex = filterkPos[0];
+  // int64_t prevFilterIndex = filterkPos[0];
   int64_t currCollapsedIndex = 0;
   collapsedFilterReductionDim.push_back({filterkPos[0]});
   SmallVector<int64_t> kShape = {filterShape[filterkPos[0]]};
   for (auto currPos : llvm::ArrayRef(filterkPos).drop_front()) {
-    if (prevFilterIndex == currPos - 1) {
+    /*if (prevFilterIndex == currPos - 1) {
       collapsedFilterReductionDim[currCollapsedIndex].push_back(currPos);
-    } else {
-      collapsedFilterReductionDim.push_back({currPos});
-      ++currCollapsedIndex;
-    }
-    prevFilterIndex = currPos;
+    } else {*/
+    collapsedFilterReductionDim.push_back({currPos});
+    ++currCollapsedIndex;
+    //}
+    // prevFilterIndex = currPos;
   }
 
   auto parallel = utils::IteratorType::parallel;
