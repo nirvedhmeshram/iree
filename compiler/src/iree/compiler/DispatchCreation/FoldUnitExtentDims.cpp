@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
+#include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
+#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Transforms.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamTypes.h"
@@ -38,6 +40,45 @@ namespace mlir::iree_compiler::DispatchCreation {
 //===----------------------------------------------------------------------===//
 // Pass helpers
 //===----------------------------------------------------------------------===//
+
+// Pattern to fold expand shapes that arise from folding unit extent dims into
+// `hal.tensor.export` op if they are directly consumed by them or optionally
+// consumed by `hal.tensor.barrier` op that is then consumed by the export op.
+
+class FoldExpandIntoExport
+    : public OpRewritePattern<IREE::HAL::TensorExportOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(IREE::HAL::TensorExportOp exportOp,
+                                PatternRewriter &rewriter) const override {
+    auto barrierOp =
+        cast<IREE::HAL::TensorBarrierOp>(exportOp.getSource().getDefiningOp());
+    auto expandOp = dyn_cast<tensor::ExpandShapeOp>(
+        barrierOp.getSources()[0].getDefiningOp());
+    barrierOp->dump();
+    if (expandOp)
+      expandOp->dump();
+    else {
+      return failure();
+    }
+    // rewriter.replaceAllUsesWith(expandOp.getResult(), expandOp.getSrc());
+    auto newBarrierOp = rewriter.create<IREE::HAL::TensorBarrierOp>(
+        barrierOp.getLoc(), expandOp.getSrc(), barrierOp.getSignalFence());
+    // auto type = IREE::HAL::BufferViewType::get(exportOp.getContext());
+    rewriter.replaceOpWithNewOp<IREE::HAL::TensorExportOp>(
+        exportOp, rewriter.getType<IREE::HAL::BufferViewType>(),
+        newBarrierOp.getResults()[0],
+        TypeAttr::get(expandOp.getResult().getType()),
+        nullptr /*exportOp.getName()*/,
+        nullptr /*exportOp.getAffinity().value()*/);
+    // auto exportOp = builder.create<IREE::HAL::TensorExportOp>(
+    //   loc, type, retVal, TypeAttr::get(retVal.getType()), /*name=*/nullptr,
+    //   /*affinity=*/nullptr);
+    barrierOp->erase();
+
+    return success();
+  }
+};
 
 static void
 populatefoldUnitDimsPatterns(RewritePatternSet &foldUnitDimsPatterns) {
@@ -187,6 +228,7 @@ void FoldUnitExtentDimsForFuncPass::runOnOperation() {
   MLIRContext *context = &getContext();
   RewritePatternSet foldUnitDimsPatterns(context);
   populatefoldUnitDimsPatterns(foldUnitDimsPatterns);
+  foldUnitDimsPatterns.insert<FoldExpandIntoExport>(context);
   if (failed(applyPatternsGreedily(getOperation(),
                                    std::move(foldUnitDimsPatterns)))) {
     return signalPassFailure();
