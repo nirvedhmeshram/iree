@@ -20,6 +20,7 @@
 namespace mlir::iree_compiler {
 
 #define GEN_PASS_DEF_COMBINELAYOUTTRANSFORMATIONPASS
+#define GEN_PASS_DEF_FOLDLAYOUTTRANSFORMATIONPASS
 #include "iree/compiler/Codegen/Common/Passes.h.inc"
 
 using IREE::LinalgExt::MapScatterOp;
@@ -252,9 +253,9 @@ static void combineRelayoutOpChain(RewriterBase &rewriter,
                                 << combinedRelayoutOp);
     relayoutOp = combinedRelayoutOp.getInput().getDefiningOp();
   }
-  if (combinedRelayoutOp.isIdentity()) {
+  /*if (combinedRelayoutOp.isIdentity()) {
     rewriter.replaceOp(combinedRelayoutOp, combinedRelayoutOp.getInput());
-  }
+  }*/
 }
 
 static MapScatterOp
@@ -301,6 +302,39 @@ struct CombineLayoutTransformationPass final
     for (IREE::Codegen::StoreToMemrefOp dispatchResult : dispatchResults) {
       MapScatterOp mapScatterOp =
           insertIdentityMapScatter(rewriter, dispatchResult);
+      combineRelayoutOpChain(rewriter, mapScatterOp);
+    }
+
+    // Cleanup any tensor.dim ops that may be present after relayout
+    // combination.
+    RewritePatternSet cleanupPatterns(&getContext());
+    memref::populateResolveRankedShapedTypeResultDimsPatterns(cleanupPatterns);
+    if (failed(applyPatternsGreedily(funcOp, std::move(cleanupPatterns)))) {
+      return signalPassFailure();
+    }
+  }
+};
+
+struct FoldLayoutTransformationPass final
+    : impl::FoldLayoutTransformationPassBase<FoldLayoutTransformationPass> {
+  using impl::FoldLayoutTransformationPassBase<
+      FoldLayoutTransformationPass>::FoldLayoutTransformationPassBase;
+
+  void runOnOperation() override {
+    auto funcOp = getOperation();
+
+    // Apply some preprocessing to convert complex layout transformation
+    // ops like pack and unpack into simpler supported ops.
+    IRRewriter rewriter(&getContext());
+    simplifyComplexRelayoutOps(rewriter, funcOp);
+
+    // Start from iree_codegen.store_to_memref ops, and combine producer
+    // relayout ops into a single map_scatter.
+    SmallVector<IREE::LinalgExt::MapScatterOp> mapScatterOps;
+    funcOp.walk([&](IREE::LinalgExt::MapScatterOp mapScatterOp) {
+      mapScatterOps.push_back(mapScatterOp);
+    });
+    for (IREE::LinalgExt::MapScatterOp mapScatterOp : mapScatterOps) {
       combineRelayoutOpChain(rewriter, mapScatterOp);
     }
 
