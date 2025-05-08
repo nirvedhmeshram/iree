@@ -21,6 +21,7 @@
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 
 namespace mlir::iree_compiler::IREE::LinalgExt {
 
@@ -39,7 +40,7 @@ static LogicalResult lowerToLoopsImpl(OpBuilder &builder,
     return tilableOp.generateScalarImplementation(builder, loc, ivs);
   }
   LogicalResult status = success();
-  builder.create<scf::ForOp>(
+  auto loop = builder.create<scf::ForOp>(
       loc,
       getValueOrCreateConstantIndexOp(builder, loc,
                                       loopRanges[loopDepth].offset),
@@ -51,6 +52,7 @@ static LogicalResult lowerToLoopsImpl(OpBuilder &builder,
         status = lowerToLoopsImpl(b, tilableOp, loopRanges, loopDepth + 1, ivs);
         b.create<scf::YieldOp>(loc);
       });
+  setLoopUnrollMarker(loop);
   return status;
 }
 
