@@ -1098,6 +1098,7 @@ static void addLowerToLLVMGPUPasses(OpPassManager &modulePassManager,
   FunctionLikeNest(modulePassManager)
       // LinalgExt -> SCF
       .addPass(IREE::LinalgExt::createLinalgExtToLoopsPass)
+      .addPass(createUnrollAnnotatedLoopsPass)
 
       // Linalg -> SCF
       .addPass(createMemrefCopyToLinalgPass)

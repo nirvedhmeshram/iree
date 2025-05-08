@@ -40,10 +40,10 @@ public:
   /// Creates an instance that plans the given scf.for |op| to be ready for
   /// prefetching. Returns failure if unable to support the given |op|.
   static FailureOr<LoopPrefetcher> get(scf::ForOp op) {
-    if (!op.getOps<scf::ForOp>().empty()) {
+    /*if (!op.getOps<scf::ForOp>().empty()) {
       LDBG("Loop prefetcher does not support nested loops yet");
       return failure();
-    }
+    }*/
 
     LoopPrefetcher prefetcher;
     prefetcher.mapping = SmallVector<IRMapping>(4);
@@ -193,6 +193,12 @@ private:
       } else if (auto compute = dyn_cast<scf::YieldOp>(op)) {
         getValueDependencies(compute, computeDependencies);
       }
+      else if (auto compute = dyn_cast<scf::ForOp>(op)) {
+        getValueDependencies(compute, readDependencies);
+      }
+      /*else if (auto compute = dyn_cast<memref::CopyOp>(op)) {
+        getValueDependencies(compute, readDependencies);
+      }*/
     }
     // If `scf.yeild` is the only compute op then there is no value in doing
     // prefetching.
