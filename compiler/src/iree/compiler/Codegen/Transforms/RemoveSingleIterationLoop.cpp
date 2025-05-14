@@ -38,6 +38,22 @@ static void replaceOpWithRegion(PatternRewriter &rewriter, Operation *op,
   rewriter.eraseOp(terminator);
 }
 
+static void replaceForWithIf(PatternRewriter &rewriter, Operation *op,
+                             scf::IfOp ifOp, Region &region,
+                             ValueRange initArgs, ValueRange blockArgs = {}) {
+  assert(llvm::hasSingleElement(region) && "expected single-region block");
+  Block *block = &region.front();
+  // Operation *terminator = block->getTerminator();
+  // ValueRange results = terminator->getOperands();
+  rewriter.inlineBlockBefore(block, &ifOp.getThenRegion().front(),
+                             ifOp.getThenRegion().front().begin(), blockArgs);
+  // Block *block = &ifOp.getElseRegion().front();
+  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
+  rewriter.create<scf::YieldOp>(ifOp.getLoc(), initArgs);
+  rewriter.replaceOp(op, ifOp);
+  // rewriter.eraseOp(terminator);
+}
+
 /// Return true if we can prove that the we always run at least the first
 /// iteration of the ForOp.
 static bool alwaysRunsFirstIteration(scf::ForOp op) {
@@ -78,7 +94,7 @@ struct SimplifyTrivialLoops : public OpRewritePattern<scf::ForOp> {
     // TODO: Handle the case where we know that the loop doesn't run more than
     // once but the loop may not run at least once by replace the `loop` with an
     // `if`.
-    if (!(alwaysRunsFirstIteration(op) && neverRunsSecondIteration(op))) {
+    if (!(/*alwaysRunsFirstIteration(op) && */ neverRunsSecondIteration(op))) {
       return failure();
     }
 
@@ -88,7 +104,24 @@ struct SimplifyTrivialLoops : public OpRewritePattern<scf::ForOp> {
     blockArgs.reserve(op.getInitArgs().size() + 1);
     blockArgs.push_back(op.getLowerBound());
     llvm::append_range(blockArgs, op.getInitArgs());
-    replaceOpWithRegion(rewriter, op, op.getRegion(), blockArgs);
+    if (alwaysRunsFirstIteration(op)) {
+      /*if (!(alwaysRunsFirstIteration(op) && neverRunsSecondIteration(op))) {
+        return failure();
+      }*/
+      replaceOpWithRegion(rewriter, op, op.getRegion(), blockArgs);
+    } else {
+      Value count = rewriter.create<arith::IndexCastUIOp>(
+          op->getLoc(), rewriter.getI1Type(), op.getUpperBound());
+      auto ifOp = rewriter.create<scf::IfOp>(op->getLoc(), op.getResultTypes(),
+                                             count, /*withElseRegion=*/true);
+      /*rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      rewriter.inlineRegionBefore( op.getRegion(),
+                                  ifOp.getThenRegion(),
+                                  ifOp.getThenRegion().begin());
+      rewriter.replaceOp(op, ifOp);*/
+      replaceForWithIf(rewriter, op, ifOp, op.getRegion(), op.getInitArgs(),
+                       blockArgs);
+    }
     return success();
   }
 };
