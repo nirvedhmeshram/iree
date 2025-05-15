@@ -192,6 +192,8 @@ private:
                              /*noTransferReads=*/true);
       } else if (auto compute = dyn_cast<scf::YieldOp>(op)) {
         getValueDependencies(compute, computeDependencies);
+      } else if (auto compute = dyn_cast<scf::IfOp>(op)) {
+        getValueDependencies(compute, readDependencies);
       }
     }
     // If `scf.yeild` is the only compute op then there is no value in doing

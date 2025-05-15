@@ -43,15 +43,15 @@ static void replaceForWithIf(PatternRewriter &rewriter, Operation *op,
                              ValueRange initArgs, ValueRange blockArgs = {}) {
   assert(llvm::hasSingleElement(region) && "expected single-region block");
   Block *block = &region.front();
-  // Operation *terminator = block->getTerminator();
+  Operation *terminator = block->getTerminator();
   // ValueRange results = terminator->getOperands();
   rewriter.inlineBlockBefore(block, &ifOp.getThenRegion().front(),
                              ifOp.getThenRegion().front().begin(), blockArgs);
   // Block *block = &ifOp.getElseRegion().front();
-  rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  rewriter.create<scf::YieldOp>(ifOp.getLoc(), initArgs);
+  /*rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
+  rewriter.create<scf::YieldOp>(ifOp.getLoc(), initArgs);*/
   rewriter.replaceOp(op, ifOp);
-  // rewriter.eraseOp(terminator);
+  rewriter.eraseOp(terminator);
 }
 
 /// Return true if we can prove that the we always run at least the first
@@ -113,7 +113,7 @@ struct SimplifyTrivialLoops : public OpRewritePattern<scf::ForOp> {
       Value count = rewriter.create<arith::IndexCastUIOp>(
           op->getLoc(), rewriter.getI1Type(), op.getUpperBound());
       auto ifOp = rewriter.create<scf::IfOp>(op->getLoc(), op.getResultTypes(),
-                                             count, /*withElseRegion=*/true);
+                                             count, /*withElseRegion=*/false);
       /*rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
       rewriter.inlineRegionBefore( op.getRegion(),
                                   ifOp.getThenRegion(),
