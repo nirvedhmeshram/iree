@@ -1521,6 +1521,13 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
     });
     return llvm::to_vector_of<Value>(newCollapseOp->getResults());
   }
+  if (auto selectOp = dyn_cast<arith::SelectOp>(user)) {
+    // auto newSourceType = llvm::cast<MemRefType>(replacement.getType());
+    auto newSelectOp = rewriter.create<arith::SelectOp>(
+        loc, selectOp.getCondition(), selectOp.getTrueValue(),
+        selectOp.getFalseValue());
+    return llvm::to_vector_of<Value>(newSelectOp->getResults());
+  }
   return std::nullopt;
 }
 

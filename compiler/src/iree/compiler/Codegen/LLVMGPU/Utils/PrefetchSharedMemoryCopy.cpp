@@ -183,6 +183,7 @@ private:
     DenseSet<Operation *> readDependencies;
     DenseSet<Operation *> writeDependencies;
     DenseSet<Operation *> computeDependencies;
+    DenseSet<Operation *> controlDependencies;
 
     for (Operation &op : forOp.getBody()->getOperations()) {
       if (auto read = dyn_cast<vector::TransferReadOp>(op)) {
@@ -192,6 +193,8 @@ private:
                              /*noTransferReads=*/true);
       } else if (auto compute = dyn_cast<scf::YieldOp>(op)) {
         getValueDependencies(compute, computeDependencies);
+      } else if (auto compute = dyn_cast<scf::IfOp>(op)) {
+        getValueDependencies(compute, controlDependencies);
       }
     }
     // If `scf.yeild` is the only compute op then there is no value in doing
@@ -216,7 +219,22 @@ private:
         computeStage.push_back(&op);
         hasStage = true;
       }
-
+      if (controlDependencies.contains(&op) && !readDependencies.contains(&op) && computeStage.empty()) {
+        readStage.push_back(&op);
+        hasStage = true;
+      }
+      // we can support read stage scf.if, to ensure that
+      // the scf.if is indeed read stage, check that
+      // there are no compute stage operations before this scf.if.
+      // We need this special handling becuase scf.if might not produce
+      // results and hence cant be found through the `computeDependencies`
+      // use-def chain logic.
+    /*if (!hasStage && isa<scf::IfOp>(op)) {
+        //if(computeStage.empty()){
+          readStage.push_back(&op);
+          hasStage = true;
+        //}
+      }*/
       // Ops with a stage will be cloned over to the new for op, while barriers
       // will be re-written.
       if (!hasStage && !isa<gpu::BarrierOp>(op)) {
@@ -228,6 +246,10 @@ private:
         }
       }
     }
+
+   //LDBG("bottom operation in compute: "<<*computeStage.back());
+   //LDBG("top operation in compute: "<<*computeStage.front());
+
 
     LLVM_DEBUG({
       // Stages cannot have overlapping operations.
