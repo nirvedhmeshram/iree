@@ -349,6 +349,12 @@ def ExtractAddressComputationPass : Pass<"iree-codegen-extract-address-computati
   ];
 }
 
+def FissionTransferOpsInControlFlowPass : Pass<"iree-codegen-fission-transfer-ops-in-control-flow", ""> {
+  let summary =
+      "";
+}
+
+
 def FlattenMemRefSubspanPass : Pass<"iree-codegen-flatten-memref-subspan", "ModuleOp"> {
   let summary =
       "Flatten n-D MemRef subspan ops to 1-D ones and fold byte offsets";
