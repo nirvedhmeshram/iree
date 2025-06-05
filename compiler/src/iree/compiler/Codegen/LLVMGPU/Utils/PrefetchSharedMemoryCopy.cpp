@@ -35,6 +35,14 @@ namespace mlir::iree_compiler {
 
 namespace {
 
+bool isPrivateAddressSpace(Attribute memorySpace) {
+  if (!memorySpace)
+    return false;
+  if (auto gpuAttr = llvm::dyn_cast<gpu::AddressSpaceAttr>(memorySpace))
+    return gpuAttr.getValue() == gpu::GPUDialect::getPrivateAddressSpace();
+  return false;
+}
+
 class LoopPrefetcher {
 public:
   /// Creates an instance that plans the given scf.for |op| to be ready for
@@ -161,7 +169,12 @@ private:
     }
 
     if (noTransferReads && isa<vector::TransferReadOp>(op)) {
-      return;
+      auto addrSpace = dyn_cast<MemRefType>(
+                           cast<vector::TransferReadOp>(op).getBase().getType())
+                           .getMemorySpace();
+      if (!isPrivateAddressSpace(addrSpace)) {
+        return;
+      }
     }
 
     if (!forOp->isProperAncestor(op)) {
@@ -221,6 +234,7 @@ private:
     // write to private memory could go in write stage. But the analysis
     // in `getValueDependencies` also needs to be aware of private memory for
     // this so that needs to be added at the same time.
+    getValueDependencies(ifOp, writeDependencies, /*noTransferReads=*/true);
   }
 
   // We only support loops whose bodies can be divided into 3 stages (read,
@@ -235,6 +249,11 @@ private:
 
     for (Operation &op : forOp.getBody()->getOperations()) {
       if (auto read = dyn_cast<vector::TransferReadOp>(op)) {
+        auto addrSpace =
+            dyn_cast<MemRefType>(read.getBase().getType()).getMemorySpace();
+        if (isPrivateAddressSpace(addrSpace)) {
+          continue;
+        }
         getValueDependencies(read, readDependencies);
       } else if (auto write = dyn_cast<vector::TransferWriteOp>(op)) {
         getValueDependencies(write, writeDependencies,
@@ -259,7 +278,7 @@ private:
         readStage.push_back(&op);
         hasStage = true;
       }
-      if (writeDependencies.contains(&op)) {
+      if (writeDependencies.contains(&op) && !hasStage) {
         writeStage.push_back(&op);
         hasStage = true;
       }
