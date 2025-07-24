@@ -19,6 +19,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 
 namespace mlir::iree_compiler {
 
@@ -33,7 +34,7 @@ struct GPUPackToIntrinsicsPass final
 } // namespace
 
 FailureOr<SmallVector<OpFoldResult>>
-getPackedSizes(linalg::LinalgOp linalgOp, RewriterBase &rewriter,
+static getPackedSizes(linalg::LinalgOp linalgOp, RewriterBase &rewriter,
                IREE::Codegen::InnerTileDescAttrInterface kind) {
   auto createPackedSizes =
       [&rewriter, &linalgOp](SmallVector<int64_t> dims,
@@ -82,8 +83,11 @@ getPackedSizes(linalg::LinalgOp linalgOp, RewriterBase &rewriter,
   return createPackedSizes(dims, indices);
 }
 
-linalg::LinalgOp removeUnitExtentDimsfromMaps(linalg::LinalgOp baseLinalgOp,
+linalg::LinalgOp static removeUnitExtentDimsfromMaps(linalg::LinalgOp baseLinalgOp,
                                               RewriterBase &rewriter) {
+  if(!isa<linalg::GenericOp>(baseLinalgOp)){
+    return baseLinalgOp;
+  }
   auto linalgOp = cast<linalg::GenericOp>(baseLinalgOp);
   SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
   if (indexingMaps.empty())
@@ -266,6 +270,44 @@ void GPUPackToIntrinsicsPass::runOnOperation() {
   // Step 1. Pack candidate linalg ops to specified shapes.
   IRRewriter rewriter(funcOp);
   SmallVector<linalg::LinalgOp> packingCandidates;
+  funcOp->walk([&](linalg::LinalgOp linalgOp) {
+    auto loweringConfig =
+        getLoweringConfig<IREE::GPU::LoweringConfigAttr>(linalgOp);
+    if (!loweringConfig) {
+      return;
+    }
+    if (!getMmaKind(loweringConfig)) {
+      return;
+    }
+    packingCandidates.push_back(linalgOp);
+  });
+  bool didTileConvolutions = false;
+  llvm::SmallDenseSet<TilingInterface> targets;
+  llvm::SmallDenseMap<TilingInterface, SmallVector<OpFoldResult>> targetTileMap;
+  for (auto candidate : packingCandidates) {
+    auto convDimsOrFailure = linalg::inferConvolutionDims(candidate);
+    if(succeeded(convDimsOrFailure)){
+      didTileConvolutions = true;
+      auto zero = rewriter.getIndexAttr(0);
+      auto one = rewriter.getIndexAttr(1);
+      SmallVector<OpFoldResult> directTileSizes(candidate.getNumLoops(), zero);
+      for (auto loopDim : convDimsOrFailure->filterLoop){
+        directTileSizes[loopDim] = one;
+      }
+      auto tilingOp = dyn_cast<TilingInterface>(*candidate);
+      targets.insert(tilingOp);
+      targetTileMap[tilingOp] = directTileSizes;
+
+    }
+  }
+  if(didTileConvolutions){
+    IREE::GPU::TilingLevel reductionLevel = IREE::GPU::TilingLevel::Reduction;
+    if(failed(applyTileAndFuseToEachRoot(rewriter, targets, reductionLevel, /*allowZeroSlices=*/true, targetTileMap))){
+            funcOp.emitError() << "tiling of level  convolution failed\n";
+      }
+  }
+  // Collect packing candiates again since the old candidates are not valid after convolution tiling.
+  packingCandidates = {};
   funcOp->walk([&](linalg::LinalgOp linalgOp) {
     auto loweringConfig =
         getLoweringConfig<IREE::GPU::LoweringConfigAttr>(linalgOp);

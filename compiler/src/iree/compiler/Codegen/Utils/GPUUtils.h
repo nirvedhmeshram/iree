@@ -222,6 +222,12 @@ queryMMAIntrinsics(IREE::HAL::ExecutableVariantOp executableOp);
 // tuner root op attribute (i.e., have the `root_op` UnitAttr).
 SmallVector<Operation *> getTunerRootOps(mlir::ModuleOp moduleOp);
 
+/// Apply a tile and fuse transformation to all payload ops and store both the
+/// tiled operation as well as the created tile loops.
+LogicalResult applyTileAndFuseToEachRoot(
+    RewriterBase &rewriter, llvm::SmallDenseSet<TilingInterface> &payloadOps,
+    IREE::GPU::TilingLevel tilingLevel, bool allowZeroSlices, std::optional<llvm::SmallDenseMap<TilingInterface, SmallVector<OpFoldResult>>> targetTileMap = std::nullopt); 
+
 } // namespace mlir::iree_compiler
 
 #endif // IREE_COMPILER_CODEGEN_UTILS_GPUUTILS_H_

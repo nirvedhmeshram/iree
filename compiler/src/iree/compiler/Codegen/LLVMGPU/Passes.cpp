@@ -444,13 +444,6 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
   // Step 1. Promote matmul operands and pack to intrinsic shapes.
   // funcPassManager.addPass(createGPUPadOperandsPass());
   funcPassManager.addPass(createGPUPromoteMatmulOperandsPass());
-  {
-    GPUApplyTilingLevelPassOptions options;
-    options.tilingLevel = IREE::GPU::TilingLevel::ConvReduction;
-    funcPassManager.addPass(createGPUApplyTilingLevelPass(options));
-    funcPassManager.addPass(createConfigTrackingCanonicalizerPass());
-    funcPassManager.addPass(createCSEPass());
-  }
   funcPassManager.addPass(createGPUPackToIntrinsicsPass());
   // Decompose packs and unpacks that are at the function boundary.
   funcPassManager.addPass(createDecomposeBoundaryPackUnPackOpsPass());
