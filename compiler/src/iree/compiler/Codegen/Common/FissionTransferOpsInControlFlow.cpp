@@ -17,6 +17,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 
 #define DEBUG_TYPE "iree-codegen-fission-transfer-ops-in-control-flow"
 
@@ -32,11 +33,11 @@ static memref::AllocaOp createAlloca(IRRewriter &rewriter,
                                      vector::TransferReadOp readOp,
                                      scf::ForOp forOp) {
   auto loc = forOp.getLoc();
-  auto allocaSize = rewriter.create<arith::CeilDivUIOp>(
-      loc,
-      rewriter.create<arith::SubIOp>(loc, forOp.getUpperBound(),
-                                     forOp.getLowerBound()),
-      forOp.getStep());
+  AffineExpr lb, ub, step;
+  bindSymbols(rewriter.getContext(), lb, ub, step);
+  AffineMap sizeMap = AffineMap::get(0, 3, (ub - lb).ceilDiv(step));
+  auto allocaSize = affine::makeComposedFoldedAffineApply(rewriter, loc,
+     sizeMap, getAsOpFoldResult(ValueRange{forOp.getLowerBound(), forOp.getUpperBound(), forOp.getStep()}));
 
   auto vectorType = cast<VectorType>(readOp.getVectorType());
   SmallVector<int64_t> memrefShape(vectorType.getShape());
@@ -47,7 +48,7 @@ static memref::AllocaOp createAlloca(IRRewriter &rewriter,
                                     AffineMap{}, privateAddrSpaceAttr);
 
   return rewriter.create<memref::AllocaOp>(loc, memrefType,
-                                           ValueRange{allocaSize});
+                                           ValueRange{getValueOrCreateConstantIndexOp(rewriter, loc, allocaSize)});
 }
 
 /// Creates an index for accessing the memref in the loop. This index is

@@ -505,12 +505,12 @@ combineLayoutTransformation(MLIRContext *ctx, FunctionOpInterface funcOp,
   tensor::CollapseShapeOp::getCanonicalizationPatterns(propagationPatterns,
                                                        ctx);
   // Only sink reshape ops, so bail if the consumer operation is a reshape.
-  auto controlSinkReshapesFn = [](OpOperand *operand) -> bool {
+  /*auto controlSinkReshapesFn = [](OpOperand *operand) -> bool {
     Operation *consumer = operand->getOwner();
-    return !llvm::isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(consumer);
+    return !llvm::isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp, linalg::CopyOp, tensor::ExtractSliceOp>(consumer);
   };
   linalg::populateFoldReshapeOpsByExpansionPatterns(propagationPatterns,
-                                                    controlSinkReshapesFn);
+                                                    controlSinkReshapesFn);*/
   // Only sink unpack ops, so bail if the producer operation is not an unpack.
   // Also only sink unpack ops when new pack operations will not be created.
   // This means the consumer op must have at most one additional destination
@@ -574,6 +574,17 @@ combineLayoutTransformation(MLIRContext *ctx, FunctionOpInterface funcOp,
       rewriter.replaceOp(mapScatterOp, mapScatterOp.getInput());
     }
   });
+
+  /*auto controlBubbleReshapesFn = [](OpOperand *operand) -> bool {
+    return true;
+  };
+  RewritePatternSet propagationPatterns2(ctx);
+  linalg::populateFoldReshapeOpsByCollapsingPatterns(propagationPatterns2,
+                                                    controlBubbleReshapesFn);
+  if (failed(applyPatternsGreedily(funcOp,
+                                   std::move(propagationPatterns2)))) {
+    return failure();
+  }*/
   return success();
 }
 

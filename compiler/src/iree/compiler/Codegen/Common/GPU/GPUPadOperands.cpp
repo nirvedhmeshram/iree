@@ -10,11 +10,50 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir::iree_compiler {
 
 #define GEN_PASS_DEF_GPUPADOPERANDSPASS
 #include "iree/compiler/Codegen/Common/GPU/Passes.h.inc"
+
+
+struct SimplifyFillPadPattern final : OpRewritePattern<tensor::PadOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tensor::PadOp padOp,
+                                PatternRewriter &rewriter) const override {
+    Operation *currentOp = padOp.getSource().getDefiningOp();
+    auto maybeExtractSlice =
+        dyn_cast_or_null<tensor::ExtractSliceOp>(currentOp);
+    while (currentOp && maybeExtractSlice) {
+      currentOp = maybeExtractSlice.getSource().getDefiningOp();
+      maybeExtractSlice = dyn_cast_or_null<tensor::ExtractSliceOp>(currentOp);
+    }
+    auto fillOp = dyn_cast_or_null<linalg::FillOp>(currentOp);
+    if (!fillOp) {
+      return rewriter.notifyMatchFailure(
+          padOp, "not coming from a linalg.fill op via tensor.extract_slice*");
+    }
+
+    Value padValue = padOp.getConstantPaddingValue();
+    RankedTensorType resultType = padOp.getResultType();
+    if (!padValue ||
+        getAsOpFoldResult(padValue) !=
+            getAsOpFoldResult(fillOp.getDpsInputOperand(0)->get())) {
+      return rewriter.notifyMatchFailure(
+          padOp, "not a constant value matching the fill value");
+    }
+
+    Location loc = padOp.getLoc();
+    auto emptyOp = rewriter.create<tensor::EmptyOp>(
+        loc, tensor::getMixedSizes(rewriter, loc, padOp),
+        resultType.getElementType());
+    rewriter.replaceOpWithNewOp<linalg::FillOp>(padOp, padValue,
+                                                emptyOp.getResult());
+
+    return success();
+  }                     
+};
 
 namespace {
 
@@ -75,6 +114,17 @@ struct GPUPadOperandsPass final
         return signalPassFailure();
       }
     });
+
+  // Cleanup patterns.
+  {
+  MLIRContext *context = &getContext();
+  RewritePatternSet cleanupPatterns(context);
+  cleanupPatterns.add<SimplifyFillPadPattern>(context);
+  if (failed(applyPatternsGreedily(funcOp, std::move(cleanupPatterns)))) {
+    return signalPassFailure();
+  }
+  }
+
   }
 };
 
