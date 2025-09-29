@@ -8,6 +8,8 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/Support/DebugLog.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 
 #define DEBUG_TYPE "iree-codegen-rocdl-buffer-instructions-optimization"
 
@@ -15,6 +17,9 @@ namespace mlir::iree_compiler {
 
 #define GEN_PASS_DEF_ROCDLBUFFERINSTRUCTIONSOPTIMIZATIONPASS
 #include "iree/compiler/Codegen/LLVMGPU/ROCDLPasses.h.inc"
+
+static constexpr char kPeeledLoopLabel[] = "__peeled_loop__";
+static constexpr char kPartialIterationLabel[] = "__partial_iteration__";
 
 namespace {
 
@@ -46,84 +51,140 @@ Value createI1And(Location loc, ArrayRef<Value> values, OpBuilder &builder) {
 // we track a set of valid masks and add that an AND or OR of valid masks is
 // valid
 
-void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
-  Location loc = maskOp.getLoc();
+struct SimplifyMaskVectorTransferRead final
+    : OpRewritePattern<vector::CreateMaskOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  SmallVector<vector::TransferReadOp> validReads;
-  // First determine if the mask meets the criteria of being either all ones or
-  // all empty.
-  SmallVector<Value> ValuesToAnd;
-  SmallVector<Value> maskIndices = maskOp.getOperands();
-  ArrayRef<int64_t> maskShape = maskOp.getResult().getType().getShape();
-  bool isValid = true;
-  for (auto [idx, maskIndex] : llvm::enumerate(maskIndices)) {
+  LogicalResult matchAndRewrite(vector::CreateMaskOp maskOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = maskOp.getLoc();
 
-    std::optional<int64_t> constantValue = getConstantIndex(maskIndex);
-    if (constantValue) {
-      if (maskShape[idx] != constantValue) {
-        isValid = false;
-        break;
+    SmallVector<vector::TransferReadOp> validReads;
+    // First determine if the mask meets the criteria of being either all ones
+    // or all empty.
+    SmallVector<Value> ValuesToAnd;
+    SmallVector<Value> maskIndices = maskOp.getOperands();
+    ArrayRef<int64_t> maskShape = maskOp.getResult().getType().getShape();
+    bool isValid = true;
+    for (auto [idx, maskIndex] : llvm::enumerate(maskIndices)) {
+
+      std::optional<int64_t> constantValue = getConstantIndex(maskIndex);
+      if (constantValue) {
+        if (maskShape[idx] != constantValue) {
+          isValid = false;
+          break;
+        }
+      } else {
+        if (maskShape[idx] != 1) {
+          isValid = false;
+          break;
+        }
+        ValuesToAnd.push_back(maskIndex);
       }
-    } else {
-      if (maskShape[idx] != 1) {
-        isValid = false;
-        break;
-      }
-      ValuesToAnd.push_back(maskIndex);
     }
-  }
-  // Bail out if the mask doesnt meet the criteria or
-  // is statically all 1's in which case we dont need
-  // to do anything.
-  if (!isValid || ValuesToAnd.empty()) {
-    return;
-  }
-
-  for (Operation *user : maskOp.getResult().getUsers()) {
-    auto readOp = dyn_cast<vector::TransferReadOp>(user);
-    // Only TransferReadOps are supported.
-    if (!readOp)
-      continue;
-
-    auto sourceType = dyn_cast<MemRefType>(readOp.getBase().getType());
-    // only supported for fat raw buffers.
-    if (!sourceType || !hasAMDGPUFatRawBufferAddressSpace(sourceType))
-      continue;
-
-    SmallVector<bool> inBounds = readOp.getInBoundsValues();
-    // Only supported for reads that are fully in_bounds.
-    if (inBounds.size() != sourceType.getRank() ||
-        llvm::any_of(inBounds, [](bool inBound) { return !inBound; })) {
-      continue;
+    // Bail out if the mask doesnt meet the criteria or
+    // is statically all 1's in which case we dont need
+    // to do anything.
+    if (!isValid || ValuesToAnd.empty()) {
+      return failure();
     }
 
-    rewriter.setInsertionPoint(readOp);
-    Value selectValue = createI1And(loc, ValuesToAnd, rewriter);
-    auto constantValue = vector::BroadcastOp::create(
-        rewriter, loc, readOp.getVectorType(), readOp.getPadding());
+    for (Operation *user : maskOp.getResult().getUsers()) {
+      auto readOp = dyn_cast<vector::TransferReadOp>(user);
+      // Only TransferReadOps are supported.
+      if (!readOp)
+        continue;
 
-    auto newReadOp = vector::TransferReadOp::create(
-        rewriter, loc, readOp.getVectorType(), readOp.getBase(),
-        readOp.getIndices(), readOp.getPadding(), ArrayRef<bool>{inBounds});
-    auto selectOp = arith::SelectOp::create(rewriter, loc, selectValue,
-                                            newReadOp, constantValue);
-    rewriter.replaceAllUsesWith(readOp, selectOp);
+      auto sourceType = dyn_cast<MemRefType>(readOp.getBase().getType());
+      // only supported for fat raw buffers.
+      if (!sourceType || !hasAMDGPUFatRawBufferAddressSpace(sourceType))
+        continue;
+
+      SmallVector<bool> inBounds = readOp.getInBoundsValues();
+      // Only supported for reads that are fully in_bounds.
+      if (inBounds.size() != sourceType.getRank() ||
+          llvm::any_of(inBounds, [](bool inBound) { return !inBound; })) {
+        continue;
+      }
+
+      rewriter.setInsertionPoint(readOp);
+      Value selectValue = createI1And(loc, ValuesToAnd, rewriter);
+      auto constantValue = vector::BroadcastOp::create(
+          rewriter, loc, readOp.getVectorType(), readOp.getPadding());
+
+      auto newReadOp = vector::TransferReadOp::create(
+          rewriter, loc, readOp.getVectorType(), readOp.getBase(),
+          readOp.getIndices(), readOp.getPadding(), ArrayRef<bool>{inBounds});
+      auto selectOp = arith::SelectOp::create(rewriter, loc, selectValue,
+                                              newReadOp, constantValue);
+      rewriter.replaceAllUsesWith(readOp, selectOp);
+    }
+    return success();
   }
-}
+};
+
+struct PeelPartialMaskLoops final
+    : OpRewritePattern<vector::CreateMaskOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::CreateMaskOp maskOp,
+                                PatternRewriter &rewriter) const override {
+  Operation* parentOp;
+  Operation* currOp = maskOp;
+  while ((parentOp = currOp->getParentOfType<scf::ForOp>())){
+    currOp = parentOp;
+  }
+  currOp->dump();
+  llvm::outs()<<"Here 1\n";
+  llvm::outs().flush();
+  if(!isa<scf::ForOp>(currOp)){
+    return failure();
+  }
+  llvm::outs()<<"Here 2\n";
+  llvm::outs().flush();
+  scf::ForOp partialIteration;
+  scf::ForOp forOp = cast<scf::ForOp>(currOp);
+  // Do not peel already peeled loops.
+  if (forOp->hasAttr(kPeeledLoopLabel))
+      return failure();
+  if(failed(peelForLoopAndSimplifyBounds(rewriter,forOp,partialIteration))){
+    return failure();
+  }
+  llvm::outs()<<"Here 3\n";
+  llvm::outs().flush();
+    // Apply label, so that the same loop is not rewritten a second time.
+    rewriter.modifyOpInPlace(partialIteration, [&]() {
+      partialIteration->setAttr(kPeeledLoopLabel, rewriter.getUnitAttr());
+      partialIteration->setAttr(kPartialIterationLabel, rewriter.getUnitAttr());
+    });
+    rewriter.modifyOpInPlace(forOp, [&]() {
+      forOp->setAttr(kPeeledLoopLabel, rewriter.getUnitAttr());
+    });
+  llvm::outs()<<"Here 4\n";
+  llvm::outs().flush();
+  return success();
+
+
+
+  }
+};
 
 struct ROCDLBufferInstructionsOptimizationPass final
     : impl::ROCDLBufferInstructionsOptimizationPassBase<
           ROCDLBufferInstructionsOptimizationPass> {
   void runOnOperation() override {
-    MLIRContext *context = &getContext();
     FunctionOpInterface funcOp = getOperation();
-    SmallVector<vector::CreateMaskOp> maskOps;
-    funcOp.walk(
-        [&](vector::CreateMaskOp maskOp) { maskOps.push_back(maskOp); });
-
-    IRRewriter rewriter(context);
-    for (vector::CreateMaskOp maskOp : maskOps) {
-      simplifyMaskOps(rewriter, maskOp);
+    MLIRContext *context = &getContext();
+    {
+    RewritePatternSet patterns(context);
+    patterns.add<SimplifyMaskVectorTransferRead>(context);
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
+    }
+    {
+    RewritePatternSet patterns(context);
+    scf::ForOp::getCanonicalizationPatterns(patterns, context);
+    patterns.add<PeelPartialMaskLoops>(context);
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
     }
   }
 };
