@@ -10,6 +10,8 @@
 #include "llvm/Support/DebugLog.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 
 #define DEBUG_TYPE "iree-codegen-rocdl-buffer-instructions-optimization"
 
@@ -123,6 +125,63 @@ struct SimplifyMaskVectorTransferRead final
   }
 };
 
+
+void analyzeMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
+  //Location loc = maskOp.getLoc();
+  SmallVector<Value> maskIndices = maskOp.getOperands();
+  //ArrayRef<int64_t> maskShape = maskOp.getResult().getType().getShape();
+  //bool isValid = true;
+  llvm::outs()<<"analyzing mask: ";
+  llvm::outs().flush();
+  maskOp.dump();
+  for (auto [idx, maskIndex] : llvm::enumerate(maskIndices)) {
+
+    std::optional<int64_t> constantValue = getConstantIndex(maskIndex);
+    if (constantValue) {
+     llvm::outs()<<"constant value: "<< constantValue<<"\n";
+    llvm::outs().flush();
+    }
+    else{
+  auto ub = ValueBoundsConstraintSet::computeConstantBound(
+      presburger::BoundType::UB, {maskIndex, /*dim=*/std::nullopt},
+      /*stopCondition=*/nullptr, /*closedUB=*/true);
+  if (succeeded(ub)) {
+    llvm::outs()<<"dynamic upper bound: "<< ub.value()<<"\n";
+    llvm::outs().flush();
+  }
+  else{
+    llvm::outs()<<"no upper bound found"<<"\n";
+    llvm::outs().flush();
+  }
+  auto lb = ValueBoundsConstraintSet::computeConstantBound(
+      presburger::BoundType::LB, {maskIndex, /*dim=*/std::nullopt},
+      /*stopCondition=*/nullptr, /*closedUB=*/true);
+  if (succeeded(lb)) {
+    llvm::outs()<<"dynamic lower bound: "<< lb.value()<<"\n";
+    llvm::outs().flush();
+  }
+  else{
+    llvm::outs()<<"no lower bound found"<<"\n";
+    llvm::outs().flush();
+  }
+  auto eq = ValueBoundsConstraintSet::computeConstantBound(
+      presburger::BoundType::EQ, {maskIndex, /*dim=*/std::nullopt},
+      /*stopCondition=*/nullptr, /*closedUB=*/true);
+  if (succeeded(eq)) {
+    llvm::outs()<<"dynamic equal bound: "<< eq.value()<<"\n";
+    llvm::outs().flush();
+  }
+  else{
+    llvm::outs()<<"no equal bound found"<<"\n";
+    llvm::outs().flush();
+  }
+
+
+    }
+  }
+
+}
+
 struct PeelPartialMaskLoops final
     : OpRewritePattern<vector::CreateMaskOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -175,6 +234,20 @@ struct ROCDLBufferInstructionsOptimizationPass final
   void runOnOperation() override {
     FunctionOpInterface funcOp = getOperation();
     MLIRContext *context = &getContext();
+  
+    {
+          SmallVector<vector::CreateMaskOp> maskOps;
+    funcOp.walk(
+        [&](vector::CreateMaskOp maskOp) { maskOps.push_back(maskOp); });
+
+    IRRewriter rewriter(context);
+    for (vector::CreateMaskOp maskOp : maskOps) {
+      analyzeMaskOps(rewriter, maskOp);
+    }
+
+    }
+
+
     {
     RewritePatternSet patterns(context);
     patterns.add<SimplifyMaskVectorTransferRead>(context);
@@ -183,8 +256,20 @@ struct ROCDLBufferInstructionsOptimizationPass final
     {
     RewritePatternSet patterns(context);
     scf::ForOp::getCanonicalizationPatterns(patterns, context);
+    scf::populateSCFForLoopCanonicalizationPatterns(patterns);
     patterns.add<PeelPartialMaskLoops>(context);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
+    }
+    {
+          SmallVector<vector::CreateMaskOp> maskOps;
+    funcOp.walk(
+        [&](vector::CreateMaskOp maskOp) { maskOps.push_back(maskOp); });
+
+    IRRewriter rewriter(context);
+    for (vector::CreateMaskOp maskOp : maskOps) {
+      analyzeMaskOps(rewriter, maskOp);
+    }
+
     }
   }
 };

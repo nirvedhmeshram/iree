@@ -387,6 +387,7 @@ static void addGPUBufferizePasses(OpPassManager &funcPassManager) {
   addIREEPostBufferizationPasses(funcPassManager);
 
   funcPassManager.addPass(createROCDLBufferInstructionsOptimizationPass());
+  //funcPassManager.addPass(affine::createSimplifyAffineMinMaxPass());
 
   funcPassManager.addPass(createCanonicalizerPass());
   funcPassManager.addPass(createCSEPass());
