@@ -480,7 +480,7 @@ static std::optional<ArrayAttr> getPaddingConvSizes(
 /// convolutions before converting them to IGEMM.
 static FailureOr<std::pair<LoweringConfigAttr, int64_t>>
 getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
-    ArrayRef<int64_t> bounds, ArrayRef<AffineMap> maps,
+    SmallVector<int64_t> bounds, ArrayRef<AffineMap> maps,
     ArrayRef<Value> operands, IREE::GPU::TargetAttr target, bool useDirectLoad,
     bool isGemm, bool scaled,
     std::optional<ConvToIgemmInfo> convToIgemmInfo = std::nullopt) {
@@ -518,18 +518,12 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
     return failure();
   }
 
-  // TODO(Max191): add dynamic shape support for inner most dims.
+  bool dynamicInnerDims = false;
   if (ShapedType::isDynamic(bounds[contractionM.back()]) ||
       ShapedType::isDynamic(bounds[contractionN.back()]) ||
       ShapedType::isDynamic(bounds[contractionK.back()])) {
-    return failure();
+    dynamicInnerDims = true;
   }
-
-  // We can support unaligned shapes as long as there are no dynamic dimensions
-  // as finding padding bounds for dynamic dimensions is not guaranteed.
-  // TODO(nirvedhmeshram): Add support so that we can find the bounds
-  // information.
-  bool canSupportUnaligned = true;
 
   // Gather all static M, N, and K dimensions to deduce the MMASchedule. Dynamic
   // dimensions will be tiled to 1 in workgroup tiling, so they are ignored when
@@ -537,29 +531,25 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   SmallVector<int64_t> mDims, nDims, kDims, batchDims;
   for (int64_t mDim : contractionM) {
     if (ShapedType::isDynamic(bounds[mDim])) {
-      canSupportUnaligned = false;
-      continue;
+      bounds[mDim] = std::numeric_limits<int64_t>::max();
     }
     mDims.push_back(mDim);
   }
   for (int64_t nDim : contractionN) {
     if (ShapedType::isDynamic(bounds[nDim])) {
-      canSupportUnaligned = false;
-      continue;
+      bounds[nDim] = std::numeric_limits<int64_t>::max();
     }
     nDims.push_back(nDim);
   }
   for (int64_t kDim : contractionK) {
     if (ShapedType::isDynamic(bounds[kDim])) {
-      canSupportUnaligned = false;
-      continue;
+      bounds[kDim] = std::numeric_limits<int64_t>::max();
     }
     kDims.push_back(kDim);
   }
   if (scaled) {
     for (int64_t kBDim : contractionKB) {
       if (ShapedType::isDynamic(bounds[kBDim])) {
-        canSupportUnaligned = false;
         continue;
       }
       kDims.push_back(kBDim);
@@ -567,7 +557,6 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   }
   for (int64_t batchDim : contractionB) {
     if (ShapedType::isDynamic(bounds[batchDim])) {
-      canSupportUnaligned = false;
       continue;
     }
     batchDims.push_back(batchDim);
@@ -606,8 +595,8 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   auto getDimBounds = [&](ArrayRef<int64_t> dims,
                           bool paddingCanBeExpensive) -> SmallVector<int64_t> {
     return llvm::map_to_vector(dims, [&](int64_t dim) {
-      if (ShapedType::isDynamic(bounds[dim]) || !canSupportUnaligned ||
-          paddingCanBeExpensive) {
+      if (ShapedType::isDynamic(bounds[dim]) ||
+          paddingCanBeExpensive || dynamicInnerDims) {
         return bounds[dim];
       }
       if (bounds[dim] > 128) {
@@ -667,7 +656,7 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   // the GEMM is accumulating (i.e., doesn't have a zero fill dpsInit) as that
   // buffer currently gets materialized as private memory. We need to add
   // missing patterns to fix that.
-  if (!schedule && canSupportUnaligned) {
+  if (!schedule) {
     LDBG() << "Attempting to deduce unaligned TileAndFuse MMA schedule";
     mustBeAligned = false;
     schedule = getMmaScheduleFromProblemAndTarget(
@@ -762,7 +751,7 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
                                            : ArrayRef<Attribute>{};
   GPU::appendPromotedOperandsList(context, attrs, promotionList,
                                   promotionTypes);
-  if (!mustBeAligned || couldNeedPadding) {
+  if (!mustBeAligned || couldNeedPadding || dynamicInnerDims) {
     SmallVector<int64_t> paddingTileSizes = workgroupTileSizes;
 
     // Initialize inner and outer padding sizes from reductionTileSizes.
@@ -904,6 +893,11 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
   }
 
   SmallVector<int64_t> bounds = linalgOp.getStaticLoopRanges();
+  for (auto bound : bounds) {
+    llvm::outs()<<bound<<" ";
+  }
+  llvm::outs()<<"\n";
+  llvm::outs().flush();
   SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
   SmallVector<Value> operands(linalgOp->getOperands());
 
