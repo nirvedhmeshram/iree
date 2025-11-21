@@ -18,9 +18,14 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-Value createI1And(Location loc, ArrayRef<Value> values, OpBuilder &builder) {
-  Value base = arith::IndexCastUIOp::create(builder, loc, builder.getI1Type(),
+Value createI1And(Location loc, ArrayRef<Value> values, OpBuilder &builder, bool needCast) {
+  Value base;
+  if(needCast){
+    base = arith::IndexCastUIOp::create(builder, loc, builder.getI1Type(),
                                             values[0]);
+  } else {
+    base = values[0];
+  }
   for (Value value : values.drop_front()) {
     Value rhs =
         arith::IndexCastUIOp::create(builder, loc, builder.getI1Type(), value);
@@ -47,6 +52,7 @@ Value createI1And(Location loc, ArrayRef<Value> values, OpBuilder &builder) {
 // valid
 
 void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
+  rewriter.setInsertionPoint(maskOp);
   Location loc = maskOp.getLoc();
 
   SmallVector<vector::TransferReadOp> validReads;
@@ -56,6 +62,7 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
   SmallVector<Value> maskIndices = maskOp.getOperands();
   ArrayRef<int64_t> maskShape = maskOp.getResult().getType().getShape();
   bool isValid = true;
+  bool needCast = true;
   for (auto [idx, maskIndex] : llvm::enumerate(maskIndices)) {
 
     std::optional<int64_t> constantValue = getConstantIndex(maskIndex);
@@ -66,8 +73,16 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
       }
     } else {
       if (maskShape[idx] != 1) {
-        isValid = false;
-        break;
+          Value vecSize = arith::ConstantIndexOp::create(
+              rewriter, loc, maskShape[idx]);
+          Value cmp = arith::CmpIOp::create(
+              rewriter, loc, arith::CmpIPredicate::eq, vecSize, maskIndex);
+          ValuesToAnd.push_back(cmp);
+          needCast = false;
+        
+        continue;
+        //isValid = false;
+        //break;
       }
       ValuesToAnd.push_back(maskIndex);
     }
@@ -97,8 +112,7 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
       continue;
     }
 
-    rewriter.setInsertionPoint(readOp);
-    Value selectValue = createI1And(loc, ValuesToAnd, rewriter);
+    Value selectValue = createI1And(loc, ValuesToAnd, rewriter, needCast);
     auto constantValue = vector::BroadcastOp::create(
         rewriter, loc, readOp.getVectorType(), readOp.getPadding());
 

@@ -696,7 +696,7 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   // Therefore we disallow padding only when LHS is transposed.
   GPUMatmulShapeType problem{getDimBounds(mDims, transposedLhs),
                              getDimBounds(nDims, transposedLhs),
-                             getDimBoundsNoPad(kDims),
+                             getDimBounds(kDims, transposedLhs),
                              getDimBoundsNoPad(batchDims),
                              lhsElemType,
                              rhsElemType,
