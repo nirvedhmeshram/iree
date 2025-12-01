@@ -56,6 +56,8 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
   SmallVector<Value> maskIndices = maskOp.getOperands();
   ArrayRef<int64_t> maskShape = maskOp.getResult().getType().getShape();
   bool isValid = true;
+  Value innermostNonConstantMaskIndex = nullptr;
+  
   for (auto [idx, maskIndex] : llvm::enumerate(maskIndices)) {
 
     std::optional<int64_t> constantValue = getConstantIndex(maskIndex);
@@ -65,17 +67,25 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
         break;
       }
     } else {
-      if (maskShape[idx] != 1) {
+      // For non-constant mask indices, we either need:
+      // 1. The mask shape dimension to be 1 (will be added to ValuesToAnd)
+      // 2. Or it's the innermost dimension (will be handled specially if stride is divisible)
+      bool isInnermostDim = (idx == maskIndices.size() - 1);
+      if (maskShape[idx] == 1) {
+        ValuesToAnd.push_back(maskIndex);
+      } else if (isInnermostDim) {
+        // Save this for later stride divisibility check
+        innermostNonConstantMaskIndex = maskIndex;
+      } else {
         isValid = false;
         break;
       }
-      ValuesToAnd.push_back(maskIndex);
     }
   }
   // Bail out if the mask doesnt meet the criteria or
   // is statically all 1's in which case we dont need
   // to do anything.
-  if (!isValid || ValuesToAnd.empty()) {
+  if (!isValid || (ValuesToAnd.empty() && !innermostNonConstantMaskIndex)) {
     return;
   }
 
@@ -98,7 +108,54 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
     }
 
     rewriter.setInsertionPoint(readOp);
-    Value selectValue = createI1And(loc, ValuesToAnd, rewriter);
+    
+    Value selectValue = nullptr;
+    
+    // Check if we need to handle the innermost dimension specially
+    if (innermostNonConstantMaskIndex) {
+      int64_t innerDimIdx = sourceType.getRank() - 1;
+      int64_t maskInnerDimSize = maskShape[innerDimIdx];
+      
+      // Check if we have at least 2 dimensions
+      if (sourceType.getRank() < 2) {
+        continue;
+      }
+      
+      // Get the stride of the second-to-innermost dimension
+      SmallVector<int64_t> strides;
+      int64_t offset;
+      if (failed(sourceType.getStridesAndOffset(strides, offset))) {
+        continue;
+      }
+      
+      int64_t secondToInnerDimIdx = sourceType.getRank() - 2;
+      int64_t secondToInnerDimStride = strides[secondToInnerDimIdx];
+      
+      // Only proceed if stride is divisible by mask size
+      if (secondToInnerDimStride <= 0 || maskInnerDimSize <= 0 || 
+          secondToInnerDimStride % maskInnerDimSize != 0) {
+        continue;
+      }
+      
+      // Create a compare: innerDimMaskIndex == maskInnerDimSize
+      Value maskSizeConstant = arith::ConstantIndexOp::create(
+          rewriter, loc, maskInnerDimSize);
+      Value cmpResult = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::eq, 
+          innermostNonConstantMaskIndex, maskSizeConstant);
+      
+      // Start with this comparison
+      if (ValuesToAnd.empty()) {
+        selectValue = cmpResult;
+      } else {
+        // Combine with other mask conditions
+        Value andValue = createI1And(loc, ValuesToAnd, rewriter);
+        selectValue = arith::AndIOp::create(rewriter, loc, andValue, cmpResult);
+      }
+    } else {
+      // No special innermost handling needed
+      selectValue = createI1And(loc, ValuesToAnd, rewriter);
+    }
     auto constantValue = vector::BroadcastOp::create(
         rewriter, loc, readOp.getVectorType(), readOp.getPadding());
 

@@ -670,6 +670,25 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
     return llvm::map_to_vector(dims, [&](int64_t dim) { return bounds[dim]; });
   };
 
+  // K dimensions have different padding thresholds
+  auto getKDimBounds = [&](ArrayRef<int64_t> dims,
+                           bool paddingCanBeExpensive) -> SmallVector<int64_t> {
+    return llvm::map_to_vector(dims, [&](int64_t dim) {
+      if (ShapedType::isDynamic(bounds[dim]) || !canSupportUnaligned ||
+          paddingCanBeExpensive) {
+        return bounds[dim];
+      }
+      if (bounds[dim] > 1024) {
+        return maybePaddedBounds(bounds[dim], 64);
+      }
+      if (bounds[dim] > 512) {
+        return maybePaddedBounds(bounds[dim], 32);
+      }
+
+      return bounds[dim];
+    });
+  };
+
   assert((operands.size() == 3 || scaled) && "expected 3 operands");
   assert((operands.size() == 5 || !scaled) && "expected 5 operands");
 
@@ -696,7 +715,7 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
   // Therefore we disallow padding only when LHS is transposed.
   GPUMatmulShapeType problem{getDimBounds(mDims, transposedLhs),
                              getDimBounds(nDims, transposedLhs),
-                             getDimBoundsNoPad(kDims),
+                             getKDimBounds(kDims, transposedLhs),
                              getDimBoundsNoPad(batchDims),
                              lhsElemType,
                              rhsElemType,
