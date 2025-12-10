@@ -7,7 +7,11 @@
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/Util/Analysis/IntegerDivisibilityAnalysis.h"
 #include "llvm/Support/DebugLog.h"
+#include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
+#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Analysis/DataFlowFramework.h"
 
 #define DEBUG_TYPE "iree-codegen-rocdl-buffer-instructions-optimization"
 
@@ -46,7 +50,8 @@ Value createI1And(Location loc, ArrayRef<Value> values, OpBuilder &builder) {
 // we track a set of valid masks and add that an AND or OR of valid masks is
 // valid
 
-void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
+void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp,
+                     DataFlowSolver &solver) {
   Location loc = maskOp.getLoc();
 
   SmallVector<vector::TransferReadOp> validReads;
@@ -117,24 +122,28 @@ void simplifyMaskOps(RewriterBase &rewriter, vector::CreateMaskOp maskOp) {
       int64_t innerDimIdx = sourceType.getRank() - 1;
       int64_t maskInnerDimSize = maskShape[innerDimIdx];
 
-      // Check if we have at least 2 dimensions
-      if (sourceType.getRank() < 2) {
-        continue;
-      }
+      // Use divisibility analysis on the mask index
+      auto *lattice =
+          solver.lookupState<IREE::Util::IntegerDivisibilityLattice>(
+              innermostNonConstantMaskIndex);
 
-      // Get the stride of the second-to-innermost dimension
-      SmallVector<int64_t> strides;
-      int64_t offset;
-      if (failed(sourceType.getStridesAndOffset(strides, offset))) {
-        continue;
-      }
+      if (lattice && !lattice->getValue().isUninitialized()) {
+        const auto &div = lattice->getValue().getValue();
+        llvm::errs() << "Divisibility analysis for mask index:\n";
+        llvm::errs() << "  udiv = " << div.udiv() << ", sdiv = " << div.sdiv()
+                     << "\n";
+        llvm::errs() << "  mask size = " << maskInnerDimSize << "\n";
 
-      int64_t secondToInnerDimIdx = sourceType.getRank() - 2;
-      int64_t secondToInnerDimStride = strides[secondToInnerDimIdx];
-
-      // Only proceed if stride is divisible by mask size
-      if (secondToInnerDimStride <= 0 || maskInnerDimSize <= 0 ||
-          secondToInnerDimStride % maskInnerDimSize != 0) {
+        // Check if the mask index is divisible by the mask size
+        if (div.udiv() % maskInnerDimSize == 0) {
+          llvm::errs() << "  -> Divisible! Can optimize.\n";
+        } else {
+          llvm::errs() << "  -> Not divisible. Skipping optimization.\n";
+          continue;
+        }
+      } else {
+        llvm::errs() << "Divisibility analysis uninitialized for mask index. "
+                        "Skipping.\n";
         continue;
       }
 
@@ -175,13 +184,23 @@ struct ROCDLBufferInstructionsOptimizationPass final
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     FunctionOpInterface funcOp = getOperation();
+
+    // Setup divisibility analysis
+    DataFlowSolver solver;
+    solver.load<dataflow::DeadCodeAnalysis>();
+    solver.load<IREE::Util::IntegerDivisibilityAnalysis>();
+    solver.load<dataflow::SparseConstantPropagation>();
+    if (failed(solver.initializeAndRun(funcOp))) {
+      return signalPassFailure();
+    }
+
     SmallVector<vector::CreateMaskOp> maskOps;
     funcOp.walk(
         [&](vector::CreateMaskOp maskOp) { maskOps.push_back(maskOp); });
 
     IRRewriter rewriter(context);
     for (vector::CreateMaskOp maskOp : maskOps) {
-      simplifyMaskOps(rewriter, maskOp);
+      simplifyMaskOps(rewriter, maskOp, solver);
     }
   }
 };
