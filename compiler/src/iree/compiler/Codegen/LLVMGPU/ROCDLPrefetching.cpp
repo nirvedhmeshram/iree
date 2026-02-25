@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -25,14 +26,56 @@ static void prefetchSharedMemory(FunctionOpInterface funcOp,
                                  unsigned numStages) {
   IRRewriter rewriter(funcOp.getContext());
   SmallVector<scf::ForOp> loops;
-  funcOp.walk([&loops](scf::ForOp forOp) { loops.push_back(forOp); });
+  // Collect only outermost loops (not nested inside other scf.for loops)
+  funcOp.walk([&loops](scf::ForOp forOp) {
+    // Check if this loop is nested inside another scf.for loop
+    if (!forOp->getParentOfType<scf::ForOp>()) {
+      loops.push_back(forOp);
+    }
+  });
 
   for (scf::ForOp forOp : loops) {
-    FailureOr<scf::ForOp> newLoop =
-        prefetchSharedMemoryCopy(rewriter, forOp, numStages);
+    // Collect imperfectly nested loops with chained iter_args.
+    // The upstream coalesceLoops handles delinearization of IVs,
+    // so operations between loops that use the IV will work correctly.
+    SmallVector<scf::ForOp> nestedLoops;
+    scf::ForOp currentLoop = forOp;
+
+    while (currentLoop) {
+      nestedLoops.push_back(currentLoop);
+
+      Block &body = currentLoop.getRegion().front();
+
+      // Look for the next nested loop
+      scf::ForOp nextLoop = nullptr;
+      for (Operation &op : body) {
+        if (auto innerFor = dyn_cast<scf::ForOp>(&op)) {
+          // Check if iter_args are properly chained
+          if (currentLoop.getNumRegionIterArgs() ==
+              innerFor.getNumRegionIterArgs() &&
+              llvm::equal(currentLoop.getRegionIterArgs(),
+                         innerFor.getInitArgs())) {
+            nextLoop = innerFor;
+          }
+          break;
+        }
+      }
+
+      currentLoop = nextLoop;
+    }
+
+    // Try to coalesce the nested loops if there are multiple.
+    // The upstream coalesceLoops now supports imperfectly nested loops
+    // by inserting delinearization at the start of the outermost loop.
+    if (nestedLoops.size() > 1) {
+      (void)coalesceLoops(rewriter, nestedLoops);
+    }
+
+    //FailureOr<scf::ForOp> newLoop =
+    //    prefetchSharedMemoryCopy(rewriter, forOp, numStages);
     // The only possible failure is the analysis failure, which does not cause
     // the pass to fail. Therefore we discard any failures at this point.
-    (void)newLoop;
+    //(void)newLoop;
     break; // TODO: Fix nested loop handling.
   }
 }
