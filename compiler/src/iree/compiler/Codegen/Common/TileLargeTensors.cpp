@@ -64,10 +64,10 @@ static void tileToMaxVectorSize(RewriterBase &rewriter,
   int64_t staticNumTrips = 1;
   for (auto [size, type] : llvm::zip_equal(staticTileSizes, iteratorTypes)) {
     // Skip tiling of reduction iterators.
-    if (type == utils::IteratorType::reduction) {
-      size = 0;
-      continue;
-    }
+    //if (type == utils::IteratorType::reduction) {
+     // size = 0;
+    //  continue;
+   // }
     if (ShapedType::isDynamic(size)) {
       // Tile all dynamic dims to 1 as well to enable new vectorization
       // opportunities. This also ensures all entries in staticTileSizes are
@@ -83,9 +83,9 @@ static void tileToMaxVectorSize(RewriterBase &rewriter,
   int64_t expectedMinVectorSize = staticNumTrips;
   int64_t lastParallelDim = 0;
   for (int64_t i = 0, e = staticTileSizes.size() - 1; i < e; ++i) {
-    if (iteratorTypes[i] == utils::IteratorType::reduction) {
-      continue;
-    }
+    //if (iteratorTypes[i] == utils::IteratorType::reduction) {
+    //  continue;
+    //}
     lastParallelDim = i;
     // While we exceed the maximum vector size, set the tile size for all
     // loops except the inner most to 1. This assumes that the only dimension
@@ -98,9 +98,9 @@ static void tileToMaxVectorSize(RewriterBase &rewriter,
       staticTileSizes[i] = 1;
     }
   }
-  if (iteratorTypes.back() == utils::IteratorType::parallel) {
+  //if (iteratorTypes.back() == utils::IteratorType::parallel) {
     lastParallelDim = staticTileSizes.size() - 1;
-  }
+  //}
 
   // For the inner most loop, pick the largest static integer factor that is
   // less than the maximum vector size. This might not be a great approximation
