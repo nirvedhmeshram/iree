@@ -1260,9 +1260,11 @@ static bool elementHasPowerOfTwoBitwidth(Value operand) {
 struct DistributionInfo {
   SmallVector<unsigned int> partitionableLoops;
   SmallVector<int64_t> loopBounds;
+  SmallVector<utils::IteratorType> iteratorTypes;
   unsigned minBitwidth = 0;
   unsigned representativeBitWidth = 0;
   bool vectorizable = false;
+  bool useIgemm = false;
 };
 
 // Generally parallel loops are partitionable, however if the dims for it
@@ -1352,15 +1354,7 @@ static FailureOr<DistributionInfo> collectOpDistributionInfo(Operation *op) {
   if (!linalgOp.hasPureTensorSemantics()) {
     return failure();
   }
-  distInfo.partitionableLoops = getSupportedPartitionableLoops(linalgOp);
 
-  // Bail out if op is not tilable.
-  if (distInfo.partitionableLoops.empty()) {
-    return failure();
-  }
-
-  // Whether we can try to use the vectorization pipeline.
-  distInfo.loopBounds = linalgOp.getStaticLoopRanges();
   bool isProjPerm =
       llvm::all_of(linalgOp.getIndexingMapsArray(),
                    [](AffineMap map) { return map.isProjectedPermutation(); });
@@ -1372,6 +1366,53 @@ static FailureOr<DistributionInfo> collectOpDistributionInfo(Operation *op) {
 
   distInfo.minBitwidth = getMinElementBitwidth(linalgOp);
   distInfo.representativeBitWidth = getRepresentativeBitWidth(linalgOp);
+
+  // Check if this is a convolution operation and extract IGEMM (im2col) details
+  if (linalg::isaConvolutionOpInterface(linalgOp)) {
+    FailureOr<LinalgExt::IGEMMGenericConvDetails> igemmGenericConvDetails =
+        LinalgExt::getIGEMMGenericConvDetails(linalgOp);
+    if (succeeded(igemmGenericConvDetails)) {
+      // Infer contraction dimensions from IGEMM maps to find parallel
+      // dimensions
+      FailureOr<mlir::linalg::ContractionDimensions> contractionDims =
+          mlir::linalg::inferContractionDims(
+              igemmGenericConvDetails->igemmContractionMaps);
+      if (succeeded(contractionDims)) {
+        // For IGEMM/im2col convolution transformation, the parallel dimensions
+        // are the M, N, and batch dimensions from the contraction
+        SmallVector<unsigned int> igemmParallelLoops;
+        igemmParallelLoops.append(contractionDims->m.begin(),
+                                  contractionDims->m.end());
+        igemmParallelLoops.append(contractionDims->n.begin(),
+                                  contractionDims->n.end());
+        igemmParallelLoops.append(contractionDims->batch.begin(),
+                                  contractionDims->batch.end());
+
+        // Sort the parallel loops for consistency
+        llvm::sort(igemmParallelLoops);
+
+        // Set partitionable loops and loop bounds from IGEMM transformation
+        distInfo.partitionableLoops = igemmParallelLoops;
+        distInfo.loopBounds = igemmGenericConvDetails->igemmLoopBounds;
+        distInfo.iteratorTypes = igemmGenericConvDetails->igemmLoopIterators;
+        distInfo.useIgemm = true;
+
+        // Return early with IGEMM distribution info
+        return distInfo;
+      }
+    }
+  }
+
+  distInfo.partitionableLoops = getSupportedPartitionableLoops(linalgOp);
+
+  // Bail out if op is not tilable.
+  if (distInfo.partitionableLoops.empty()) {
+    return failure();
+  }
+
+  // Whether we can try to use the vectorization pipeline.
+  distInfo.loopBounds = linalgOp.getStaticLoopRanges();
+  distInfo.iteratorTypes = linalgOp.getIteratorTypesArray();
   return distInfo;
 };
 
@@ -1414,6 +1455,10 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   // this logic should be dropped once we have a better solution.
   SmallVector<int64_t> workgroupTileSizeMultiples =
       getWorkgroupSizeMultiples(cast<TilingInterface>(op));
+
+  if(distInfo.useIgemm){
+     workgroupTileSizeMultiples = SmallVector<int64_t>(loopDepth, 1); 
+  } 
 
   // Common case for all linalg ops.
 
@@ -1614,10 +1659,8 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   int64_t vectorSize = 1;
   int64_t numLoops = distInfo.loopBounds.size();
   SmallVector<int64_t> loopTileSizes(numLoops, 0);
-  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
-    SmallVector<utils::IteratorType> iterTypes =
-        linalgOp.getIteratorTypesArray();
-    for (auto [reverseIdx, iter] : llvm::enumerate(llvm::reverse(iterTypes))) {
+  if (!distInfo.iteratorTypes.empty()) {
+    for (auto [reverseIdx, iter] : llvm::enumerate(llvm::reverse(distInfo.iteratorTypes))) {
       unsigned i = numLoops - reverseIdx - 1;
       if (linalg::isReductionIterator(iter) || i >= workgroupTileSizes.size() ||
           workgroupTileSizes[i] == 0) {
@@ -1653,11 +1696,23 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   LDBG() << "Selected tile and fuse lowering config: " << loweringConfig
          << "\n";
 
+  // Create pipeline options to indicate if we're using IGEMM convolution
+  SmallVector<NamedAttribute, 1> pipelineAttrs;
+  auto pipelineOptions = IREE::GPU::GPUPipelineOptionsAttr::get(
+      context,
+      /*prefetchNumStages=*/2,
+      /*no_reduce_shared_memory_bank_conflicts=*/false,
+      /*use_igemm_convolution=*/distInfo.useIgemm,
+      /*reorder_workgroups_strategy=*/std::nullopt);
+  pipelineAttrs.emplace_back(
+      IREE::GPU::GPUPipelineOptionsAttr::getDictKeyName(), pipelineOptions);
+  auto pipelineConfig = DictionaryAttr::get(context, pipelineAttrs);
+
   // TODO(qedawkins): Use a shared pipeline identifier here.
   return setOpConfigAndEntryPointFnTranslation(
       entryPoint, op, loweringConfig,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
-      {flatWorkgroupSize, 1, 1}, subgroupSize, DictionaryAttr());
+      {flatWorkgroupSize, 1, 1}, subgroupSize, pipelineConfig);
 }
 
 LogicalResult setScatterLoweringConfig(IREE::GPU::TargetAttr target,
