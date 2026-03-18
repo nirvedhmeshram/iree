@@ -122,6 +122,7 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::MFMA_F32_16x16x4_F32:
   case MMAIntrinsic::WMMA_F32_16x16x4_F32:
     return {f32, f32, f32};
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
   case MMAIntrinsic::MFMA_F32_16x16x16_F16:
   case MMAIntrinsic::MFMA_F32_32x32x8_F16:
   case MMAIntrinsic::MFMA_F32_16x16x32_F16:
@@ -138,6 +139,7 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
   case MMAIntrinsic::WMMA_F16_16x16x32_F16:
     return {f16, f16, f16};
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
   case MMAIntrinsic::MFMA_F32_16x16x16_BF16:
@@ -262,12 +264,32 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
             /*element=*/{k / 2, 1}};
   };
 
+  // For 4x4 blocked MFMAs (e.g., 4x4x4x16B with 16 blocks)
+  // Uses 3D layout with semantic dimensions [Block, M, K] for LHS
+  // 16 blocks spanning all 64 lanes: block b uses lanes 4*b to 4*b+3
+  // A[b][i][k]: lane = 4*b + i, k stored in element (16-bit units)
+  auto mfmaLhs4xK = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{16, 4, 1}, /*tstrides=*/{4, 1, 0},
+            /*element=*/{1, 1, k}};
+  };
+  // B[b][k][j]: lane = 4*b + j, k stored in element (16-bit units)
+  // Semantic dimensions [Block, K, N] for RHS
+  auto mfmaRhsKx4 = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{16, 1, 4}, /*tstrides=*/{4, 0, 1},
+            /*element=*/{1, k, 1}};
+  };
+
   const MMASingleSubgroupLayout mfmaAcc16x16 = {
       /*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
       /*element=*/{4, 1}};
   const MMASingleSubgroupLayout mfmaAcc32x32 = {
       /*outer=*/{4, 1}, /*thread=*/{2, 32}, /*tstrides=*/{32, 1},
       /*element=*/{4, 1}};
+  // C[b][i][j]: lane = 4*b + j, i stored in GPRs
+  // Semantic dimensions [Block, M, N] for ACC
+  const MMASingleSubgroupLayout mfmaAcc4x4 = {
+      /*outer=*/{1, 1, 1}, /*thread=*/{16, 1, 4}, /*tstrides=*/{4, 0, 1},
+      /*element=*/{1, 4, 1}};
 
   // Note: For gfx12, we specify here that, for example with K=16, lane 0 takes
   // A[0, 0..7] and that lane 16 takes A[0, 8..15]. The hardware will internally
@@ -325,6 +347,16 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return mfmaRhsKx32(4);
     case kMMAOperandAcc:
       return mfmaAcc32x32;
+    }
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs4xK(4);
+    case kMMAOperandRhs:
+      return mfmaRhsKx4(4);
+    case kMMAOperandAcc:
+      return mfmaAcc4x4;
     }
   case MMAIntrinsic::MFMA_I32_16x16x16_I8:
   case MMAIntrinsic::MFMA_F32_16x16x16_F16:
@@ -598,6 +630,16 @@ getMNKShapeFromIntrinsic(MMAIntrinsic intrinsic) {
   }
   auto lhs = getSingleSubgroupLayout(intrinsic, kMMAOperandLhs);
   auto rhs = getSingleSubgroupLayout(intrinsic, kMMAOperandRhs);
+
+  // For 3D layouts with batch/block dimension, skip index 0 (batch)
+  // and use indices 1,2 for M/N/K computation
+  bool has3DLayout = lhs.outer.size() == 3;
+  if (has3DLayout) {
+    return {lhs.outer[1] * lhs.thread[1] * lhs.element[1],
+            rhs.outer[2] * rhs.thread[2] * rhs.element[2],
+            lhs.outer[2] * lhs.thread[2] * lhs.element[2]};
+  }
+
   return {lhs.outer[0] * lhs.thread[0] * lhs.element[0],
           rhs.outer[1] * rhs.thread[1] * rhs.element[1],
           lhs.outer[1] * lhs.thread[1] * lhs.element[1]};
