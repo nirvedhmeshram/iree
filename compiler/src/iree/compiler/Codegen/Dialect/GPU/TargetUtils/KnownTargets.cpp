@@ -229,6 +229,9 @@ const WgpDetails *getCDNA4WgpDetails() {
       MMAIntrinsic::MFMA_F32_16x16x4_F32,
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      // Block intrinsics
+      MMAIntrinsic::MFMA_F32_4x4x4x16B_F16,
+      MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16,
   };
   static const ScaledMMAIntrinsic cdna4ScaledMMAOps[] = {
       // Introduced in CDNA4
@@ -281,6 +284,9 @@ const WgpDetails *getCDNA3WgpDetails() {
       MMAIntrinsic::MFMA_F32_16x16x4_F32,
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      // Block intrinsics
+      MMAIntrinsic::MFMA_F32_4x4x4x16B_F16,
+      MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16,
   };
   static const int64_t cdna3DMASizes[] = {32};
   static const WgpDetails cdna3Wgp = {
