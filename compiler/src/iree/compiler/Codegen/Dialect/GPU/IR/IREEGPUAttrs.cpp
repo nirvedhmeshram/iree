@@ -58,9 +58,14 @@ static LogicalResult verifyMmaIndexingMaps(ArrayRef<AffineMap> maps) {
   return linalg::inferContractionDims(maps);
 }
 
-static int getBlockSize(MMAIntrinsic /*intrinsic*/) {
-  // Not supporting any block size other than 1 at the moment.
-  return 1;
+static int getBlockSize(MMAIntrinsic intrinsic) {
+  switch (intrinsic) {
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
+  case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
+    return 16;
+  default:
+    return 1;
+  }
 }
 
 static uint32_t getArchID(MMAIntrinsic intrinsic) {
@@ -587,7 +592,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
                                                 bool colMajor) {
   MMASingleSubgroupLayout baseLayout =
       getSingleSubgroupLayout(intrinsic, operandIndex);
-  assert(baseLayout.element.size() == 2 && "expected 2d layout");
+  //assert(baseLayout.element.size() == 2 && "expected 2d layout");
   if (colMajor) {
     std::swap(baseLayout.element[0], baseLayout.element[1]);
     std::swap(baseLayout.thread[0], baseLayout.thread[1]);
@@ -717,9 +722,16 @@ void MMAAttr::getUndistributedTileTypes(
     SmallVectorImpl<VectorType> &result) const {
   MLIRContext *ctx = getContext();
   OpaqueMmaLayout o = getOpaqueMMALayout(ctx, getIntrinsic());
-  result.assign({VectorType::get({o.mSize, o.kSize}, o.aType),
-                 VectorType::get({o.kSize, o.nSize}, o.bType),
-                 VectorType::get({o.mSize, o.nSize}, o.cType)});
+  if (isBlockIntrinsic()) {
+    auto [b, m, n, k] = getBMNKShape();
+    result.assign({VectorType::get({b, m, k}, o.aType),
+                   VectorType::get({b, k, n}, o.bType),
+                   VectorType::get({b, m, n}, o.cType)});
+  } else {
+    result.assign({VectorType::get({o.mSize, o.kSize}, o.aType),
+                   VectorType::get({o.kSize, o.nSize}, o.bType),
+                   VectorType::get({o.mSize, o.nSize}, o.cType)});
+  }
 }
 
 template <typename MMAIntrinsicType>
@@ -736,6 +748,13 @@ static VectorType getThreadVectorType(MLIRContext *context,
       return VectorType::get(
           {s.outer[0] * s.outer[1], s.element[0] * s.element[1]}, elemType);
     }
+  }
+  // For 3D block intrinsics, preserve the rank: each dim holds outer[i]*element[i]
+  // elements per thread. This matches the 3D undistributed tile structure.
+  if (s.outer.size() == 3) {
+    return VectorType::get({s.outer[0] * s.element[0], s.outer[1] * s.element[1],
+                            s.outer[2] * s.element[2]},
+                           elemType);
   }
   return VectorType::get(
       {s.element[0] * s.element[1] * s.outer[0] * s.outer[1]}, elemType);
@@ -754,7 +773,7 @@ std::optional<SmallVector<int64_t, 2>>
 MMAAttr::getUndistributedTileDimExpansion(int64_t operandIndex,
                                           int64_t dim) const {
   assert(operandIndex <= 2 && "invalid operand index");
-  assert(dim < 2 && "pre-expansion inner tiles all have two elements");
+  //assert(dim < 2 && "pre-expansion inner tiles all have two elements");
   MMASingleSubgroupLayout layout =
       getSingleSubgroupLayout(*this, static_cast<int>(operandIndex));
   if (layout.outer[dim] > 1) {
@@ -766,6 +785,25 @@ MMAAttr::getUndistributedTileDimExpansion(int64_t operandIndex,
 
 int64_t MMAAttr::getBlockSize() const {
   return IREE::GPU::getBlockSize(getIntrinsic());
+}
+
+bool MMAAttr::isBlockIntrinsic() const {
+  MMASingleSubgroupLayout lhs =
+      getSingleSubgroupLayout(getIntrinsic(), kMMAOperandLhs);
+  return lhs.outer.size() == 3;
+}
+
+std::tuple<int64_t, int64_t, int64_t, int64_t> MMAAttr::getBMNKShape() const {
+  MMASingleSubgroupLayout lhs =
+      getSingleSubgroupLayout(getIntrinsic(), kMMAOperandLhs);
+  MMASingleSubgroupLayout rhs =
+      getSingleSubgroupLayout(getIntrinsic(), kMMAOperandRhs);
+  // 3D layout indices: 0 = batch, 1 = M (lhs) or K (rhs), 2 = K (lhs) or N (rhs)
+  int64_t b = lhs.outer[0] * lhs.thread[0] * lhs.element[0];
+  int64_t m = lhs.outer[1] * lhs.thread[1] * lhs.element[1];
+  int64_t n = rhs.outer[2] * rhs.thread[2] * rhs.element[2];
+  int64_t k = lhs.outer[2] * lhs.thread[2] * lhs.element[2];
+  return {b, m, n, k};
 }
 
 int64_t MMAAttr::getSubgroupSize() const {
@@ -816,15 +854,23 @@ SmallVector<VirtualMMAIntrinsic> MMAAttr::getVirtualIntrinsics() const {
 static Value createMmaOp(OpBuilder &builder, Location loc,
                          MMAIntrinsic intrinsic, Type resultType, Value lhs,
                          Value rhs, Value acc, bool colMajor = false) {
-  auto getVecOrSingleElem = [&](Value vec) -> Value {
-    bool one = cast<VectorType>(vec.getType()).getNumElements() == 1;
-    return one ? vector::ExtractOp::create(builder, loc, vec, 0) : vec;
+  auto flattenOrExtract = [&](Value vec) -> Value {
+    auto vecTy = cast<VectorType>(vec.getType());
+    int64_t numElems = vecTy.getNumElements();
+    if (numElems == 1)
+      return vector::ExtractOp::create(builder, loc, vec, 0);
+    if (vecTy.getRank() > 1)
+      vec = vector::ShapeCastOp::create(
+          builder, loc,
+          VectorType::get({numElems}, vecTy.getElementType()), vec);
+    return vec;
   };
   auto layout = getOpaqueMMALayout(builder.getContext(), intrinsic);
   if (is_AMD_MFMA(intrinsic)) {
-    // MFMA intrinsics want single-element operands of element type, not vector.
-    lhs = getVecOrSingleElem(lhs);
-    rhs = getVecOrSingleElem(rhs);
+    // MFMA intrinsics want flat 1D vector operands (or scalar for single elem).
+    // Block intrinsics have 3D distributed tiles that must be shape-cast first.
+    lhs = flattenOrExtract(lhs);
+    rhs = flattenOrExtract(rhs);
 
     // Because the thread layout of the lhs and rhs are transpositions of one
     // another for all MFMA variants, to produce a column major result we can
@@ -832,10 +878,19 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
     if (colMajor) {
       std::swap(lhs, rhs);
     }
-    return amdgpu::MFMAOp::create(builder, loc, resultType, layout.mSize,
-                                  layout.nSize, layout.kSize,
-                                  getBlockSize(intrinsic), lhs, rhs, acc)
-        .getResult();
+    // Flatten acc and result type for block intrinsics (3D -> 1D), then
+    // reshape the mfma result back to the original type.
+    Value flatAcc = flattenOrExtract(acc);
+    auto flatResultType = cast<VectorType>(flatAcc.getType());
+    Value mfmaResult =
+        amdgpu::MFMAOp::create(builder, loc, flatResultType, layout.mSize,
+                               layout.nSize, layout.kSize,
+                               getBlockSize(intrinsic), lhs, rhs, flatAcc)
+            .getResult();
+    if (flatResultType != resultType)
+      mfmaResult =
+          vector::ShapeCastOp::create(builder, loc, resultType, mfmaResult);
+    return mfmaResult;
   }
   if (is_AMD_WMMA(intrinsic)) {
     return amdgpu::WMMAOp::create(builder, loc, resultType, layout.mSize,

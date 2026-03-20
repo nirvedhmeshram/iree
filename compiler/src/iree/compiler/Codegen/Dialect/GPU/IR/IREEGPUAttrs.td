@@ -303,6 +303,10 @@ def IREEGPU_MMAAttr : AttrDef<IREEGPU_Dialect, "MMA", [
     int64_t getBlockSize() const;
 
     SmallVector<VirtualMMAIntrinsic> getVirtualIntrinsics() const;
+
+    bool isBlockIntrinsic() const;
+
+    ::std::tuple<int64_t, int64_t, int64_t, int64_t> getBMNKShape() const;
   }];
 }
 

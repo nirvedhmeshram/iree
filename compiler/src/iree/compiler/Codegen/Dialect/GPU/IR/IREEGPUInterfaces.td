@@ -33,6 +33,33 @@ def IREEGPU_MmaInterfaceAttr
       /*methodName=*/"getSubgroupSize",
       /*args=*/(ins)
     >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Return true if this is a block (batched) intrinsic whose operands have
+        a leading batch/block dimension, i.e. A: <B, M, K>, B: <B, K, N>,
+        C: <B, M, N>. Defaults to false for non-block intrinsics.
+      }],
+      /*retType=*/"bool",
+      /*methodName=*/"isBlockIntrinsic",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return false;"
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Return the (B, M, N, K) shape of a block MMA operation where A has
+        shape <B, M, K>, B has shape <B, K, N>, and C has shape <B, M, N>.
+        Only valid to call when isBlockIntrinsic() returns true.
+      }],
+      /*retType=*/"::std::tuple<int64_t, int64_t, int64_t, int64_t>",
+      /*methodName=*/"getBMNKShape",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        llvm_unreachable("getBMNKShape called on non-block intrinsic");
+        return {};
+      }]
+    >,
   ];
 
   // Methods included to preserve interfaces from beforet he InnerTileDescAttrInterface
@@ -50,7 +77,10 @@ def IREEGPU_MmaInterfaceAttr
       $_attr.getUndistributedTileTypes(preThreadTypes);
       ::llvm::ArrayRef<int64_t> accShape = preThreadTypes[2].getShape();
       ::llvm::ArrayRef<int64_t> lhsShape = preThreadTypes[0].getShape();
-      return {accShape[0], accShape[1], lhsShape[1]};
+      // Use rank-relative indices to handle both 2D (M,N / M,K) and
+      // 3D block (B,M,N / B,M,K) undistributed tile types.
+      int64_t rank = accShape.size();
+      return {accShape[rank - 2], accShape[rank - 1], lhsShape[rank - 1]};
     }
 
     /// Returns the element types of the operands to the MMA operation:
