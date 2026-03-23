@@ -15,6 +15,19 @@ from tests.e2e.matmul.common import *
 from tests.e2e.matmul.compilation_info import *
 from tests.e2e.matmul.generate_code_mx import *
 
+# Import batch matmul generators conditionally
+try:
+    from tests.e2e.matmul.generate_code_batch import (
+        BatchTestShape,
+        generate_function_batch,
+        generate_call_batch,
+    )
+except ImportError:
+    # Fallback if batch module doesn't exist
+    BatchTestShape = None
+    generate_function_batch = None
+    generate_call_batch = None
+
 
 # Helper for generate_function.
 # Generates a name for a test function in the generated MLIR code.
@@ -62,7 +75,28 @@ def generate_function(
     transpose_rhs: bool,
     dynamicities: tuple[Dynamicity, Dynamicity, Dynamicity],
     compilation_info: Optional[CompilationInfo] = None,
+    batch_size: int = None,
 ):
+    # Route to batch generator if batch_size is specified
+    if batch_size is not None:
+        batch_shape = BatchTestShape(
+            batch=batch_size,
+            m=shape.m,
+            k=shape.k,
+            n=shape.n,
+            accumulate=shape.accumulate,
+        )
+        # Add batch dynamicity (static for now)
+        batch_dynamicities = (Dynamicity.STATIC,) + dynamicities
+        return generate_function_batch(
+            lhs_rhs_type=lhs_rhs_type,
+            acc_type=acc_type,
+            batch_shape=batch_shape,
+            transpose_rhs=transpose_rhs,
+            dynamicities=batch_dynamicities,
+            compilation_info=compilation_info,
+        )
+
     if mx_scale_type:
         return generate_function_mx(
             lhs_rhs_type=lhs_rhs_type,
@@ -174,7 +208,25 @@ def generate_call(
     mx_block_size: int,
     shape: TestShape,
     transpose_rhs: bool,
+    batch_size: int = None,
 ):
+    # Route to batch generator if batch_size is specified
+    if batch_size is not None:
+        batch_shape = BatchTestShape(
+            batch=batch_size,
+            m=shape.m,
+            k=shape.k,
+            n=shape.n,
+            accumulate=shape.accumulate,
+        )
+        return generate_call_batch(
+            function=function,
+            lhs_rhs_type=lhs_rhs_type,
+            acc_type=acc_type,
+            batch_shape=batch_shape,
+            transpose_rhs=transpose_rhs,
+        )
+
     if mx_scale_type:
         return generate_call_mx(
             function=function,

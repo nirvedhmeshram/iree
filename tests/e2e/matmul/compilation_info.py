@@ -23,12 +23,15 @@ class MMASchedule:
     m_tile_count: int
     n_tile_count: int
     k_tile_count: int
+    batch_tile_count: int = 1  # Number of batch elements per workgroup (for batch_matmul)
 
     def get_subgroup_basis(self) -> str:
         return f"[[{self.m_count}, {self.n_count}, 1], [0, 1, 2]]"
 
-    def get_subgroup_tile(self) -> str:
+    def get_subgroup_tile(self, is_batch: bool = False) -> str:
         """Returns subgroup tile sizes for TileAndFuse pipeline."""
+        if is_batch:
+            return f"[{self.batch_tile_count}, {self.m_count}, {self.n_count}, 0]"
         return f"[{self.m_count}, {self.n_count}, 0]"
 
 
@@ -71,6 +74,7 @@ class IREEGPUCompilationInfo(CompilationInfo):
     reduction_tile: list[int]
     # Translation Info
     mma_schedule: Optional[MMASchedule]
+    is_batch: bool = False  # Whether this is for batch_matmul
 
     def get_compilation_info_attr(self) -> str:
         requested_pipeline = self.dispatch_lowering_pass_pipeline
@@ -88,7 +92,7 @@ class IREEGPUCompilationInfo(CompilationInfo):
             lowering_config = (
                 f"  lowering_config = #iree_gpu.lowering_config<{{"
                 f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
-                f"  subgroup = {self.mma_schedule.get_subgroup_tile()}, "
+                f"  subgroup = {self.mma_schedule.get_subgroup_tile(self.is_batch)}, "
                 f"  {convert_acc_gemm}"
                 f"  promote_operands = [0, 1], "
                 f"  workgroup = {self.workgroup_tile}, "
@@ -98,7 +102,7 @@ class IREEGPUCompilationInfo(CompilationInfo):
             lowering_config = (
                 f"  lowering_config = #iree_gpu.lowering_config<{{"
                 f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
-                f"  subgroup = {self.mma_schedule.get_subgroup_tile()}, "
+                f"  subgroup = {self.mma_schedule.get_subgroup_tile(self.is_batch)}, "
                 f"  promote_operands = [0, 1], "
                 f"  workgroup = {self.workgroup_tile}, "
                 f"  reduction = {self.reduction_tile} }}>,\n"
@@ -481,11 +485,104 @@ def get_cuda_test_compilation_infos(
     return infos
 
 
+def get_rocm_batch_test_compilation_infos(
+    compilation_info_id: CompilationInfoId,
+    lhs_rhs_type: MatrixElemTypeId,
+    batch_tile: int = 1,
+):
+    """Generate compilation infos for batch matmul operations."""
+    intrinsic = ""
+    if compilation_info_id == CompilationInfoId.LLVMGPUTileAndFuseMFMA:
+        intrinsic = "MFMA"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMAR3:
+        intrinsic = "WMMAR3"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMAR4:
+        intrinsic = "WMMAR4"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMA1250:
+        intrinsic = "WMMA1250"
+    else:
+        raise ValueError("Unknown pipeline for rocm")
+
+    # Create batch versions of schedules - subset for testing
+    schedules = []
+    if intrinsic == "MFMA":
+        schedules = [
+            MMASchedule("MFMA_F32_16x16x16_F16", 2, 2, 1, 1, 1, batch_tile),
+            MMASchedule("MFMA_F32_16x16x16_F16", 4, 2, 4, 2, 2, batch_tile),
+            MMASchedule("MFMA_F32_32x32x8_F16", 2, 2, 1, 1, 1, batch_tile),
+        ]
+    elif intrinsic == "WMMAR3":
+        schedules = [
+            MMASchedule("WMMAR3_F32_16x16x16_F16", 2, 2, 1, 1, 1, batch_tile),
+        ]
+    elif intrinsic == "WMMAR4":
+        schedules = [
+            MMASchedule("WMMAR4_F32_16x16x16_F16", 2, 2, 1, 1, 1, batch_tile),
+        ]
+    elif intrinsic == "WMMA1250":
+        schedules = [
+            MMASchedule("WMMA_F32_16x16x32_F16", 2, 2, 1, 1, 1, batch_tile),
+        ]
+
+    subgroup_size = 64 if intrinsic == "MFMA" else 32
+
+    infos = []
+    for schedule in schedules:
+        # Skip schedules with an intrinsic which element type does not match
+        input_type = schedule.intrinsic.split("_")[-1]
+        if lhs_rhs_type.value.upper() != input_type:
+            continue
+
+        # Calculate tile sizes based on intrinsic (same logic as regular matmul)
+        if schedule.intrinsic in (
+            "MFMA_F32_16x16x16_F16",
+            "WMMAR3_F32_16x16x16_F16",
+            "WMMAR4_F32_16x16x16_F16",
+        ):
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+        elif schedule.intrinsic == "MFMA_F32_32x32x8_F16":
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 32
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 32
+        elif schedule.intrinsic == "WMMA_F32_16x16x32_F16":
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+        else:
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+
+        # BATCH SPECIFIC: 4-element arrays [B, M, N, K]
+        workgroup_tile = [batch_tile, wg_tile_m, wg_tile_n, 0]
+        reduction_tile = [0, 0, 0, schedule.k_tile_count]
+
+        pipeline = (
+            "#iree_gpu.pipeline<TileAndFuse>"
+            if compilation_info_id == CompilationInfoId.LLVMGPUTileAndFuseMFMA
+            else "#iree_gpu.pipeline<VectorDistribute>"
+        )
+
+        infos.append(
+            IREEGPUCompilationInfo(
+                workgroup_size=[schedule.n_count * subgroup_size, schedule.m_count, 1],
+                subgroup_size=subgroup_size,
+                dispatch_lowering_pass_pipeline=pipeline,
+                workgroup_tile=workgroup_tile,
+                reduction_tile=reduction_tile,
+                mma_schedule=schedule,
+                is_batch=True,
+            )
+        )
+
+    return infos
+
+
 # Returns the list of CompilationInfo's to use for the CompilationInfoId.
 def get_test_compilation_infos(
     compilation_info_id: CompilationInfoId,
     lhs_rhs_type: MatrixElemTypeId,
     acc_type: Optional[MatrixElemTypeId] = None,
+    is_batch: bool = False,
+    batch_tile: int = 1,
 ) -> typing.List[typing.Optional[CompilationInfo]]:
     if compilation_info_id == CompilationInfoId.NONE:
         return [None]
@@ -496,6 +593,10 @@ def get_test_compilation_infos(
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR4,
         CompilationInfoId.LLVMGPUVectorDistributeWMMA1250,
     ]:
+        if is_batch:
+            return get_rocm_batch_test_compilation_infos(
+                compilation_info_id, lhs_rhs_type, batch_tile
+            )
         return get_rocm_test_compilation_infos(compilation_info_id, lhs_rhs_type)
 
     if compilation_info_id in [

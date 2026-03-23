@@ -1655,6 +1655,36 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
+    e2e_batch_matmul_${_CDNA_ARCH}_tileandfusemfma_f16_batch32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+    "--shapes=easy_large_static"
+    "--batch_size=32"
+    "--batch_tile=1"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-${_CDNA_ARCH}"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
     e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_f32
   TEST_TYPE
     matmul
@@ -1693,6 +1723,37 @@ iree_generated_e2e_runner_test(
     "--acc_type=f32"
     "--transpose_rhs"
     "--shapes=easy_large_static"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-${_CDNA_ARCH}"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_batch_matmul_${_CDNA_ARCH}_tileandfusemfma_tb_f16_batch32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+    "--transpose_rhs"
+    "--shapes=easy_large_static"
+    "--batch_size=32"
+    "--batch_tile=1"
     "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test

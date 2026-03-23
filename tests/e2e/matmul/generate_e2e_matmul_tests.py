@@ -113,12 +113,16 @@ def generate(
     transpose_rhs: bool,
     compilation_info_id: CompilationInfoId,
     accumulate: bool,
+    batch_size: int = None,
+    batch_tile: int = 1,
 ):
     functions = {}
     calls = []
 
+    is_batch = batch_size is not None
+
     for compilation_info in get_test_compilation_infos(
-        compilation_info_id, lhs_rhs_type, acc_type
+        compilation_info_id, lhs_rhs_type, acc_type, is_batch=is_batch, batch_tile=batch_tile
     ):
         for shape in get_test_shapes(shapes_id, accumulate):
             for dynamicities in get_dynamicities(shapes_id):
@@ -131,6 +135,7 @@ def generate(
                     transpose_rhs=transpose_rhs,
                     dynamicities=dynamicities,
                     compilation_info=compilation_info,
+                    batch_size=batch_size,
                 )
                 # Different testcases may differ only by runtime parameters but
                 # share the same code. For example, dynamic-shapes testcases
@@ -148,6 +153,7 @@ def generate(
                         mx_block_size=mx_block_size,
                         shape=shape,
                         transpose_rhs=transpose_rhs,
+                        batch_size=batch_size,
                     )
                 )
 
@@ -261,6 +267,19 @@ def parse_arguments():
         help="Remove/add custom shape tests with existing accumulators, useful to set for extremely large shapes that may cause memory issues",
         required=False,
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        help="Batch size for batch_matmul operations",
+        required=False,
+    )
+    parser.add_argument(
+        "--batch_tile",
+        type=int,
+        default=1,
+        help="Number of batch elements to process per workgroup (for batch_matmul)",
+        required=False,
+    )
     return parser.parse_args()
 
 
@@ -289,6 +308,8 @@ def write_calls_file(functions, calls, filename, requirements):
     module_definition = module_definition + (
         "util.func private @matmul_test.generate_random_matrix(%device: !hal.device, %dim0: i64, %dim1: i64, %element_type: i32, %seed: i32) -> !hal.buffer_view\n"
         "util.func private @matmul_test.check_matmul_results(%device: !hal.device, %m: i64, %k: i64, %n: i64, %transpose_rhs: i32, %lhs: !hal.buffer_view, %rhs: !hal.buffer_view, %acc: !hal.buffer_view, %actual_result: !hal.buffer_view)\n"
+        "util.func private @matmul_test.check_batch_matmul_results(%device: !hal.device, %batch: i64, %m: i64, %k: i64, %n: i64, %transpose_rhs: i32, %lhs: !hal.buffer_view, %rhs: !hal.buffer_view, %acc: !hal.buffer_view, %actual_result: !hal.buffer_view)\n"
+        "util.func private @matmul_test.reshape_3d(%input: !hal.buffer_view, %dim0: i64, %dim1: i64, %dim2: i64) -> !hal.buffer_view\n"
         "\n"
     )
 
@@ -322,6 +343,8 @@ def main(args):
         transpose_rhs=args.transpose_rhs,
         compilation_info_id=CompilationInfoId(args.compilation_info),
         accumulate=args.accumulate,
+        batch_size=args.batch_size,
+        batch_tile=args.batch_tile,
     )
 
     write_code_file(functions, args.output_matmul_mlir)
