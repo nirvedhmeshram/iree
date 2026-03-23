@@ -1627,7 +1627,7 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_${_CDNA_ARCH}_vecdistmfma_f16
+    e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_f16
   TEST_TYPE
     matmul
   GENERATOR
@@ -1636,7 +1636,7 @@ iree_generated_e2e_runner_test(
     "--lhs_rhs_type=f16"
     "--acc_type=f32"
     "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
@@ -1655,7 +1655,7 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_${_CDNA_ARCH}_vecdistmfma_f32
+    e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_f32
   TEST_TYPE
     matmul
   GENERATOR
@@ -1664,7 +1664,7 @@ iree_generated_e2e_runner_test(
     "--lhs_rhs_type=f32"
     "--acc_type=f32"
     "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
@@ -1683,7 +1683,7 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_${_CDNA_ARCH}_vecdistmfma_tb_f16
+    e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_tb_f16
   TEST_TYPE
     matmul
   GENERATOR
@@ -1693,7 +1693,7 @@ iree_generated_e2e_runner_test(
     "--acc_type=f32"
     "--transpose_rhs"
     "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
@@ -1712,7 +1712,7 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_${_CDNA_ARCH}_vecdistmfma_${_F8E4M3_TYPE}
+    e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_${_F8E4M3_TYPE}
   TEST_TYPE
     matmul
   GENERATOR
@@ -1721,7 +1721,7 @@ iree_generated_e2e_runner_test(
     "--lhs_rhs_type=${_F8E4M3_TYPE}"
     "--acc_type=f32"
     "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
@@ -1740,7 +1740,7 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_${_CDNA_ARCH}_vecdistmfma_i8
+    e2e_matmul_${_CDNA_ARCH}_tileandfusemfma_i8
   TEST_TYPE
     matmul
   GENERATOR
@@ -1750,7 +1750,7 @@ iree_generated_e2e_runner_test(
     "--acc_type=i32"
     "--transpose_rhs"
     "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+    "--compilation_info=LLVMGPUTileAndFuseMFMA"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS

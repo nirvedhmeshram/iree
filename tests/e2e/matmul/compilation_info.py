@@ -37,7 +37,7 @@ class MMASchedule:
 @enum.unique
 class CompilationInfoId(enum.Enum):
     NONE = ""
-    LLVMGPUVectorDistributeMFMA = "LLVMGPUVectorDistributeMFMA"
+    LLVMGPUTileAndFuseMFMA = "LLVMGPUTileAndFuseMFMA"
     LLVMGPUVectorDistributeWMMAR3 = "LLVMGPUVectorDistributeWMMAR3"
     LLVMGPUVectorDistributeWMMAR4 = "LLVMGPUVectorDistributeWMMAR4"
     LLVMGPUVectorDistributeWMMA1250 = "LLVMGPUVectorDistributeWMMA1250"
@@ -98,7 +98,8 @@ class IREEGPUCompilationInfo(CompilationInfo):
             lowering_config = (
                 f"  lowering_config = #iree_gpu.lowering_config<{{"
                 f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
-                f"  subgroup_basis = {self.mma_schedule.get_subgroup_basis()}, "
+                f"  subgroup = {self.mma_schedule.get_subgroup_tile()}, "
+                f"  promote_operands = [0, 1], "
                 f"  workgroup = {self.workgroup_tile}, "
                 f"  reduction = {self.reduction_tile} }}>,\n"
             )
@@ -194,7 +195,7 @@ def get_rocm_test_compilation_infos(
     compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
 ):
     intrinsic = ""
-    if compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeMFMA:
+    if compilation_info_id == CompilationInfoId.LLVMGPUTileAndFuseMFMA:
         intrinsic = "MFMA"
     elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMAR3:
         intrinsic = "WMMAR3"
@@ -351,15 +352,12 @@ def get_rocm_test_compilation_infos(
         if schedule.intrinsic == "MFMA_F32_16x16x4_F32":
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 4
         elif schedule.intrinsic == "MFMA_F32_16x16x16_F16":
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 16
         elif schedule.intrinsic == "MFMA_F32_32x32x8_F16":
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 32
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 32
-            wg_tile_k = schedule.k_tile_count * 8
         elif (
             schedule.intrinsic == "VMFMA_F32_16x16x32_F16"
             or schedule.intrinsic == "MFMA_I32_16x16x32_I8"
@@ -370,7 +368,6 @@ def get_rocm_test_compilation_infos(
         ):
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 32
         elif (
             schedule.intrinsic == "VMFMA_F32_32x32x16_F16"
             or schedule.intrinsic == "MFMA_F32_32x32x16_F8E4M3FNUZ"
@@ -379,7 +376,6 @@ def get_rocm_test_compilation_infos(
         ):
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 32
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 32
-            wg_tile_k = schedule.k_tile_count * 16
         elif schedule.intrinsic in (
             "WMMAR3_F32_16x16x16_F16",
             "WMMAR3_I32_16x16x16_I8",
@@ -389,12 +385,10 @@ def get_rocm_test_compilation_infos(
         ):
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 16
         elif schedule.intrinsic == "WMMA_F32_16x16x32_F16":
             # gfx1250: M=16, N=16, K=32
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 32
         elif schedule.intrinsic in (
             "WMMA_F32_16x16x64_F8E4M3FN",
             "WMMA_I32_16x16x64_I8",
@@ -402,23 +396,21 @@ def get_rocm_test_compilation_infos(
             # gfx1250: M=16, N=16, K=64
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 64
         elif schedule.intrinsic == "WMMA_F32_16x16x128_F8E4M3FN":
             # gfx1250: M=16, N=16, K=128
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
-            wg_tile_k = schedule.k_tile_count * 128
         else:
             raise NotImplementedError("unhandled intrinsic case")
 
         workgroup_tile = [wg_tile_m, wg_tile_n, 0]
-        reduction_tile = [0, 0, wg_tile_k]
+        reduction_tile = [0, 0, schedule.k_tile_count]
         workgroup_size = [schedule.n_count * subgroup_size, schedule.m_count, 1]
         infos.append(
             IREEGPUCompilationInfo(
                 workgroup_tile=workgroup_tile,
                 reduction_tile=reduction_tile,
-                dispatch_lowering_pass_pipeline="#iree_gpu.pipeline<VectorDistribute>",
+                dispatch_lowering_pass_pipeline="#iree_gpu.pipeline<TileAndFuse>",
                 workgroup_size=workgroup_size,
                 mma_schedule=schedule,
                 subgroup_size=subgroup_size,
@@ -499,7 +491,7 @@ def get_test_compilation_infos(
         return [None]
 
     if compilation_info_id in [
-        CompilationInfoId.LLVMGPUVectorDistributeMFMA,
+        CompilationInfoId.LLVMGPUTileAndFuseMFMA,
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR3,
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR4,
         CompilationInfoId.LLVMGPUVectorDistributeWMMA1250,
