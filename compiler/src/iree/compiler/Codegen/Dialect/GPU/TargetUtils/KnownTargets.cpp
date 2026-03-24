@@ -230,7 +230,7 @@ const WgpDetails *getCDNA4WgpDetails() {
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
       // Block intrinsics
-      MMAIntrinsic::MFMA_F32_4x4x4x16B_F16,
+      //MMAIntrinsic::MFMA_F32_4x4x4x16B_F16,
       MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16,
   };
   static const ScaledMMAIntrinsic cdna4ScaledMMAOps[] = {
