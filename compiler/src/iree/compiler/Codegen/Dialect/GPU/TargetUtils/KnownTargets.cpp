@@ -229,9 +229,21 @@ const WgpDetails *getCDNA4WgpDetails() {
       MMAIntrinsic::MFMA_F32_16x16x4_F32,
       MMAIntrinsic::MFMA_F32_16x16x16_F16,
       MMAIntrinsic::MFMA_F32_32x32x8_F16,
-      // Block intrinsics
+      // Block intrinsics - commented out because the auto-selection heuristic
+      // does not yet handle them correctly for non-batch matmuls. They can
+      // still be used via explicit compilation_info.
+      // (F16)
       //MMAIntrinsic::MFMA_F32_4x4x4x16B_F16,
-      MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16,
+      //MMAIntrinsic::MFMA_F32_16x16x4x4B_F16,
+      //MMAIntrinsic::MFMA_F32_32x32x4x2B_F16,
+      // (BF16)
+      //MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16,
+      //MMAIntrinsic::MFMA_F32_16x16x4x4B_BF16,
+      //MMAIntrinsic::MFMA_F32_32x32x4x2B_BF16,
+      // (I8)
+      //MMAIntrinsic::MFMA_I32_4x4x4x16B_I8,
+      //MMAIntrinsic::MFMA_I32_16x16x4x4B_I8,
+      //MMAIntrinsic::MFMA_I32_32x32x4x2B_I8,
   };
   static const ScaledMMAIntrinsic cdna4ScaledMMAOps[] = {
       // Introduced in CDNA4
