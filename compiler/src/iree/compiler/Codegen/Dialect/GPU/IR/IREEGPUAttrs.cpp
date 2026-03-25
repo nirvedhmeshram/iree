@@ -63,6 +63,22 @@ static int getBlockSize(MMAIntrinsic intrinsic) {
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
     return 16;
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_F16:
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_BF16:
+    return 4;
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_F16:
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_BF16:
+  case MMAIntrinsic::MFMA_I32_32x32x4x2B_I8:
+  case MMAIntrinsic::MFMA_F32_32x32x1x2B_F32:
+    return 2;
+  case MMAIntrinsic::MFMA_I32_16x16x4x4B_I8:
+  case MMAIntrinsic::MFMA_F32_16x16x1x4B_F32:
+    return 4;
+  case MMAIntrinsic::MFMA_I32_4x4x4x16B_I8:
+  case MMAIntrinsic::MFMA_F32_4x4x1x16B_F32:
+    return 16;
+  case MMAIntrinsic::MFMA_F64_4x4x4x4B_F64:
+    return 4;
   default:
     return 1;
   }
@@ -123,11 +139,17 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   Type i32 = IntegerType::get(context, 32);
   switch (intrinsic) {
   case MMAIntrinsic::MFMA_F64_16x16x4_F64:
+  case MMAIntrinsic::MFMA_F64_4x4x4x4B_F64:
     return {f64, f64, f64};
   case MMAIntrinsic::MFMA_F32_16x16x4_F32:
+  case MMAIntrinsic::MFMA_F32_4x4x1x16B_F32:
+  case MMAIntrinsic::MFMA_F32_16x16x1x4B_F32:
+  case MMAIntrinsic::MFMA_F32_32x32x1x2B_F32:
   case MMAIntrinsic::WMMA_F32_16x16x4_F32:
     return {f32, f32, f32};
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_F16:
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_F16:
   case MMAIntrinsic::MFMA_F32_16x16x16_F16:
   case MMAIntrinsic::MFMA_F32_32x32x8_F16:
   case MMAIntrinsic::MFMA_F32_16x16x32_F16:
@@ -145,6 +167,8 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMA_F16_16x16x32_F16:
     return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_BF16:
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_BF16:
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
   case MMAIntrinsic::MFMA_F32_16x16x16_BF16:
@@ -215,6 +239,9 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::WMMA_F16_16x16x64_F8E4M3FN_F8E5M2:
   case MMAIntrinsic::WMMA_F16_16x16x128_F8E4M3FN_F8E5M2:
     return {f8E4M3FN, f8E5M2, f16};
+  case MMAIntrinsic::MFMA_I32_16x16x4x4B_I8:
+  case MMAIntrinsic::MFMA_I32_32x32x4x2B_I8:
+  case MMAIntrinsic::MFMA_I32_4x4x4x16B_I8:
   case MMAIntrinsic::MFMA_I32_16x16x16_I8:
   case MMAIntrinsic::MFMA_I32_32x32x8_I8:
   case MMAIntrinsic::MFMA_I32_16x16x32_I8:
@@ -269,7 +296,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
             /*element=*/{k / 2, 1}};
   };
 
-  // For 4x4 blocked MFMAs.
+  // For 4x4 blocked MFMAs (16 blocks).
   // Uses 3D layout with semantic dimensions [Block, M, K] for LHS.
   auto mfmaLhs4xK = [](int64_t k) -> MMASingleSubgroupLayout {
     return {/*outer=*/{1, 1, 1}, /*thread=*/{16, 4, 1}, /*tstrides=*/{4, 1, 64},
@@ -280,6 +307,43 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
     return {/*outer=*/{1, 1, 1}, /*thread=*/{16, 1, 4}, /*tstrides=*/{4, 64, 1},
             /*element=*/{1, k, 1}};
   };
+
+  // For 16x16 blocked MFMAs (4 blocks).
+  // Uses 3D layout with semantic dimensions [Block, M, K] for LHS.
+  // Each block uses 16 consecutive lanes (block stride=16).
+  auto mfmaLhs16x4B = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{4, 16, 1}, /*tstrides=*/{16, 1, 64},
+            /*element=*/{1, 1, k}};
+  };
+  // Semantic dimensions [Block, K, N] for RHS.
+  auto mfmaRhsKx16x4B = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{4, 1, 16}, /*tstrides=*/{16, 64, 1},
+            /*element=*/{1, k, 1}};
+  };
+  // Semantic dimensions [Block, M, N] for ACC.
+  // M-groups at stride-16, 4 blocks and 4 M-rows packed in GPR space.
+  const MMASingleSubgroupLayout mfmaAcc16x16x4B = {
+      /*outer=*/{1, 1, 1}, /*thread=*/{1, 4, 16}, /*tstrides=*/{64, 16, 1},
+      /*element=*/{4, 4, 1}};
+
+  // For 32x32 blocked MFMAs (2 blocks).
+  // Uses 3D layout with semantic dimensions [Block, M, K] for LHS.
+  // Each block uses 32 consecutive lanes (block stride=32).
+  auto mfmaLhs32x2B = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{2, 32, 1}, /*tstrides=*/{32, 1, 64},
+            /*element=*/{1, 1, k}};
+  };
+  // Semantic dimensions [Block, K, N] for RHS.
+  auto mfmaRhsKx32x2B = [](int64_t k) -> MMASingleSubgroupLayout {
+    return {/*outer=*/{1, 1, 1}, /*thread=*/{2, 1, 32}, /*tstrides=*/{32, 64, 1},
+            /*element=*/{1, k, 1}};
+  };
+  // Semantic dimensions [Block, M, N] for ACC.
+  // Same interleaved 32x32 structure as mfmaAcc32x32, with 2 blocks in GPR
+  // space (16 GPRs/block). Block element=2, M outer=4, M element=4.
+  const MMASingleSubgroupLayout mfmaAcc32x32x2B = {
+      /*outer=*/{1, 4, 1}, /*thread=*/{1, 2, 32}, /*tstrides=*/{64, 32, 1},
+      /*element=*/{2, 4, 1}};
 
   const MMASingleSubgroupLayout mfmaAcc16x16 = {
       /*outer=*/{1, 1}, /*thread=*/{4, 16}, /*tstrides=*/{16, 1},
@@ -292,6 +356,22 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
   const MMASingleSubgroupLayout mfmaAcc4x4 = {
       /*outer=*/{1, 1, 1}, /*thread=*/{16, 1, 4}, /*tstrides=*/{4, 64, 1},
       /*element=*/{1, 4, 1}};
+
+  // For v_mfma_f64_4x4x4_4b_f64: K is distributed across lanes (stride=16),
+  // not packed in elements. Each thread holds exactly 1 f64 element for all
+  // operands. Lane = 4*block + 16*k + m (LHS), 4*block + 16*k + n (RHS/ACC).
+  // Semantic dimensions [Block, M, K] for LHS.
+  const MMASingleSubgroupLayout mfmaF64Lhs4x4B = {
+      /*outer=*/{1, 1, 1}, /*thread=*/{4, 4, 4}, /*tstrides=*/{4, 1, 16},
+      /*element=*/{1, 1, 1}};
+  // Semantic dimensions [Block, K, N] for RHS.
+  const MMASingleSubgroupLayout mfmaF64Rhs4x4B = {
+      /*outer=*/{1, 1, 1}, /*thread=*/{4, 4, 4}, /*tstrides=*/{4, 16, 1},
+      /*element=*/{1, 1, 1}};
+  // Semantic dimensions [Block, M, N] for ACC. Lane = 16*m + 4*block + n.
+  const MMASingleSubgroupLayout mfmaF64Acc4x4B = {
+      /*outer=*/{1, 1, 1}, /*thread=*/{4, 4, 4}, /*tstrides=*/{4, 16, 1},
+      /*element=*/{1, 1, 1}};
 
   // Note: For gfx12, we specify here that, for example with K=16, lane 0 takes
   // A[0, 0..7] and that lane 16 takes A[0, 8..15]. The hardware will internally
@@ -319,6 +399,15 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return mfmaRhsKx16(4);
     case kMMAOperandAcc:
       return mfmaAcc16x16;
+    }
+  case MMAIntrinsic::MFMA_F64_4x4x4x4B_F64:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaF64Lhs4x4B;
+    case kMMAOperandRhs:
+      return mfmaF64Rhs4x4B;
+    case kMMAOperandAcc:
+      return mfmaF64Acc4x4B;
     }
   // Note: the returned layout for f64 differs than for other MFMAs.
   case MMAIntrinsic::MFMA_F64_16x16x4_F64:
@@ -352,6 +441,7 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
     }
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_F16:
   case MMAIntrinsic::MFMA_F32_4x4x4x16B_BF16:
+  case MMAIntrinsic::MFMA_I32_4x4x4x16B_I8:
     switch (operandIndex) {
     case kMMAOperandLhs:
       return mfmaLhs4xK(4);
@@ -359,6 +449,55 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
       return mfmaRhsKx4(4);
     case kMMAOperandAcc:
       return mfmaAcc4x4;
+    }
+  case MMAIntrinsic::MFMA_F32_4x4x1x16B_F32:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs4xK(1);
+    case kMMAOperandRhs:
+      return mfmaRhsKx4(1);
+    case kMMAOperandAcc:
+      return mfmaAcc4x4;
+    }
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_F16:
+  case MMAIntrinsic::MFMA_F32_16x16x4x4B_BF16:
+  case MMAIntrinsic::MFMA_I32_16x16x4x4B_I8:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs16x4B(4);
+    case kMMAOperandRhs:
+      return mfmaRhsKx16x4B(4);
+    case kMMAOperandAcc:
+      return mfmaAcc16x16x4B;
+    }
+  case MMAIntrinsic::MFMA_F32_16x16x1x4B_F32:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs16x4B(1);
+    case kMMAOperandRhs:
+      return mfmaRhsKx16x4B(1);
+    case kMMAOperandAcc:
+      return mfmaAcc16x16x4B;
+    }
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_F16:
+  case MMAIntrinsic::MFMA_F32_32x32x4x2B_BF16:
+  case MMAIntrinsic::MFMA_I32_32x32x4x2B_I8:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs32x2B(4);
+    case kMMAOperandRhs:
+      return mfmaRhsKx32x2B(4);
+    case kMMAOperandAcc:
+      return mfmaAcc32x32x2B;
+    }
+  case MMAIntrinsic::MFMA_F32_32x32x1x2B_F32:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return mfmaLhs32x2B(1);
+    case kMMAOperandRhs:
+      return mfmaRhsKx32x2B(1);
+    case kMMAOperandAcc:
+      return mfmaAcc32x32x2B;
     }
   case MMAIntrinsic::MFMA_I32_16x16x16_I8:
   case MMAIntrinsic::MFMA_F32_16x16x16_F16:
@@ -844,8 +983,15 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
   auto flattenOrExtract = [&](Value vec) -> Value {
     auto vecTy = cast<VectorType>(vec.getType());
     int64_t numElems = vecTy.getNumElements();
-    if (numElems == 1)
+    if (numElems == 1) {
+      // Collapse to 1D before extracting so we always get a scalar, not a
+      // sub-vector (e.g. vector<1x1x1xf32> -> vector<1xf32> -> f32).
+      if (vecTy.getRank() > 1)
+        vec = vector::ShapeCastOp::create(
+            builder, loc,
+            VectorType::get({1}, vecTy.getElementType()), vec);
       return vector::ExtractOp::create(builder, loc, vec, 0);
+    }
     if (vecTy.getRank() > 1)
       vec = vector::ShapeCastOp::create(
           builder, loc,
@@ -866,17 +1012,26 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
       std::swap(lhs, rhs);
     }
     // Flatten acc and result type for block intrinsics (3D -> 1D), then
-    // reshape the mfma result back to the original type.
+    // reshape the mfma result back to the original type. For single-element
+    // accumulators (e.g. f64 4x4 block intrinsic), flatAcc may be a scalar.
     Value flatAcc = flattenOrExtract(acc);
-    auto flatResultType = cast<VectorType>(flatAcc.getType());
+    Type flatResultType = flatAcc.getType();
     Value mfmaResult =
         amdgpu::MFMAOp::create(builder, loc, flatResultType, layout.mSize,
                                layout.nSize, layout.kSize,
                                getBlockSize(intrinsic), lhs, rhs, flatAcc)
             .getResult();
-    if (flatResultType != resultType)
+    if (flatResultType != resultType) {
+      // If the mfma produced a scalar (single-element accumulator), broadcast
+      // it to a 1-element vector before shape-casting to the original type.
+      if (!isa<VectorType>(mfmaResult.getType())) {
+        auto oneElemVec = VectorType::get({1}, flatResultType);
+        mfmaResult =
+            vector::BroadcastOp::create(builder, loc, oneElemVec, mfmaResult);
+      }
       mfmaResult =
           vector::ShapeCastOp::create(builder, loc, resultType, mfmaResult);
+    }
     return mfmaResult;
   }
   if (is_AMD_WMMA(intrinsic)) {
