@@ -26,6 +26,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/DebugLog.h"
 #include "llvm/Support/InterleavedRange.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/Attributes.h"
@@ -873,10 +874,46 @@ getMatmulOrIGEMMLoweringConfigAndWorkgroupSize(
     }
   }
 
-  // Use global load DMA attribute (subgroup sizes will be derived from
-  // translation_info).
+  // Determine if the target supports global_transpose_load (gfx1200/gfx1201).
+  FailureOr<amdgpu::Chipset> chipset =
+      amdgpu::Chipset::parse(target.getArch());
+  bool isRDNA4 = succeeded(chipset) && chipset->majorVersion == 12 &&
+                 chipset->minorVersion <= 1;
+
+  // Element types supported by global_transpose_load on gfx1200+ (8-bit and
+  // 16-bit variants; 4/6-bit gfx1250 variants are intentionally excluded here).
+  auto supportsGlobalTransposeLoad = [](Type elemType) -> bool {
+    return elemType.isInteger(8) || elemType.isF16() || elemType.isBF16() ||
+           elemType.isInteger(16) ||
+           isa<Float8E5M2FNUZType, Float8E4M3FNUZType, Float8E5M2Type,
+               Float8E4M3FNType>(elemType);
+  };
+
   SmallVector<Attribute> promotionArray;
-  if (useDirectLoad) {
+
+  // For gfx1200+ with supported element types, use global_transpose_load for
+  // operands whose memory layout requires a transpose relative to what the MMA
+  // intrinsic expects:
+  //   - LHS when transposedLhs (K is not the innermost dimension in memory)
+  //   - RHS when !transposedRhs (N is not the innermost dimension in memory)
+  // This is independent of the useDirectLoad (DMA) path.
+  if (isRDNA4) {
+    Attribute lhsAttr = nullptr;
+    Attribute rhsAttr = nullptr;
+    if (transposedLhs && supportsGlobalTransposeLoad(lhsElemType))
+      lhsAttr = IREE::GPU::UseGlobalTransposeLoadAttr::get(context);
+    if (!transposedRhs && supportsGlobalTransposeLoad(rhsElemType))
+      rhsAttr = IREE::GPU::UseGlobalTransposeLoadAttr::get(context);
+    if (lhsAttr || rhsAttr) {
+      promotionArray = {
+          lhsAttr ? lhsAttr : IREE::GPU::DerivedThreadConfigAttr::get(context),
+          rhsAttr ? rhsAttr : IREE::GPU::DerivedThreadConfigAttr::get(context)};
+    }
+  }
+
+  // Use global load DMA attribute (subgroup sizes will be derived from
+  // translation_info). Only applies when not already using global_transpose_load.
+  if (useDirectLoad && promotionArray.empty()) {
     Attribute lhsAttr = IREE::GPU::UseGlobalLoadDMAAttr::get(context);
     Attribute rhsAttr = IREE::GPU::UseGlobalLoadDMAAttr::get(context);
     // Apply XOR swizzle for BF16 DMA operands whose reduction dim is

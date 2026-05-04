@@ -309,6 +309,7 @@ static bool isGlobalMemoryRead(vector::TransferReadOp read) {
   return hasGlobalMemoryAddressSpace(srcType);
 }
 
+
 // Helper function to check if a transfer_write is to shared memory.
 static bool isSharedMemoryWrite(vector::TransferWriteOp write) {
   auto dstType = dyn_cast<MemRefType>(write.getBase().getType());
@@ -333,6 +334,13 @@ static LogicalResult analyzeIfOp(scf::IfOp ifOp,
         hasGlobalRead = true;
         readRoots.push_back(nestedOp);
         LDBG() << "  Found global read in scf.if: " << *nestedOp;
+      }
+    } else if (auto trLoad =
+                   dyn_cast<amdgpu::GlobalTransposeLoadOp>(nestedOp)) {
+      if (!hasGlobalRead) {
+        hasGlobalRead = true;
+        readRoots.push_back(nestedOp);
+        LDBG() << "  Found global_transpose_load in scf.if: " << *nestedOp;
       }
     } else if (auto write = dyn_cast<vector::TransferWriteOp>(nestedOp)) {
       if (!hasSharedWrite && isSharedMemoryWrite(write)) {
@@ -407,12 +415,16 @@ static LogicalResult identifyRootOperations(
       }
     } else {
       // Stream copy mode: transfer_read, transfer_write, scf.yield
-      // Read stage roots: vector.transfer_read from global memory
+      // Read stage roots: vector.transfer_read or global_transpose_load from
+      // global memory.
       if (auto read = dyn_cast<vector::TransferReadOp>(op)) {
         if (isGlobalMemoryRead(read)) {
           readRoots.push_back(&op);
           LDBG() << "  Read root: " << op;
         }
+      } else if (isa<amdgpu::GlobalTransposeLoadOp>(op)) {
+        readRoots.push_back(&op);
+        LDBG() << "  Read root (global_transpose_load): " << op;
       }
       // Write stage roots: all vector.transfer_write operations
       else if (auto write = dyn_cast<vector::TransferWriteOp>(op)) {
