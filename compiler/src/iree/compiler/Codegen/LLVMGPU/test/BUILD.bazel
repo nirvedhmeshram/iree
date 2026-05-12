@@ -57,6 +57,7 @@ iree_lit_test_suite(
             "pack_shared_memory_alloc.mlir",
             "pipeline_coalesced_dma.mlir",
             "prefetch_shared_memory.mlir",
+            "prefetch_shared_memory_global_transpose_load.mlir",
             "reduction_pipeline_cuda.mlir",
             "reduction_pipeline_rocm.mlir",
             "reduction_pipeline_softmax_rocm.mlir",
